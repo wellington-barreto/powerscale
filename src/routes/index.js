@@ -13,12 +13,12 @@ router.put('/profile/preferences',async(req,res,next)=>{try{const data=await one
 router.put('/profile/password',async(req,res,next)=>{try{const {error}=await admin.auth.admin.updateUserById(req.user.id,{password:req.body.password||req.body.new_password});if(error)throw error;res.json({success:true})}catch(e){next(e)}});
 router.get('/auth/google/ads-url',async(req,res)=>res.json({url:null,message:'Configure a integração OAuth do Google Ads no POWER SCALE.'}));
 
-A.get('/platforms',list('platforms')); A.post('/platforms',create('platforms')); A.post('/platforms/:id',update('platforms'));
+A.get('/platforms',listRaw('platforms')); A.post('/platforms',create('platforms')); A.post('/platforms/:id',update('platforms'));
 A.get('/user-platforms',list('user_platforms')); A.post('/user-platforms',create('user_platforms')); A.delete('/user-platforms/:id',remove('user_platforms'));
 A.get('/trackers',async(req,res,next)=>{try{let q=admin.from('trackers').select('*,platform:platforms(*)',{count:'exact'}).eq('workspace_id',req.workspaceId).is('archived_at',null);if(req.query.q)q=q.ilike('name',`%${req.query.q}%`);const {data,error,count}=await q.order('id',{ascending:false});if(error)throw error;res.json({data:{data,total:count??data.length}})}catch(e){next(e)}});
 A.post('/trackers',create('trackers')); A.put('/trackers/:id',update('trackers'));
 A.delete('/trackers/:id',async(req,res,next)=>{try{await one(admin.from('trackers').update({archived_at:new Date().toISOString()}).eq('id',req.params.id).eq('workspace_id',req.workspaceId));res.json({success:true})}catch(e){next(e)}});
-A.get('/trackers/archived',async(req,res,next)=>{try{const data=await one(admin.from('trackers').select('*,platform:platforms(*)').eq('workspace_id',req.workspaceId).not('archived_at','is',null));res.json({data:{data}})}catch(e){next(e)}});
+A.get('/trackers/archived',async(req,res,next)=>{try{const data=await one(admin.from('trackers').select('*,platform:platforms(*)').eq('workspace_id',req.workspaceId).not('archived_at','is',null));res.json({data})}catch(e){next(e)}});
 A.post('/trackers/:id/restore',async(req,res,next)=>{try{const data=await one(admin.from('trackers').update({archived_at:null}).eq('id',req.params.id).eq('workspace_id',req.workspaceId).select().single());res.json(data)}catch(e){next(e)}});
 A.get('/trackers/:id/scroll-analytics',async(req,res,next)=>{try{const data=await one(admin.from('tracker_scroll_events').select('*').eq('workspace_id',req.workspaceId).eq('tracker_id',req.params.id));res.json({data})}catch(e){next(e)}});
 A.get('/trackers/unlinked-campaigns/count',async(req,res,next)=>{try{const {count,error}=await admin.from('google_ads_campaigns').select('*',{count:'exact',head:true}).eq('workspace_id',req.workspaceId).is('tracker_id',null);if(error)throw error;res.json({count:count||0})}catch(e){next(e)}});
@@ -62,6 +62,8 @@ A.get('/plan-usage',async(req,res)=>res.json({plan:'development',limits:{},usage
 router.use('/workspace',A);
 
 function list(table){return async(req,res,next)=>{try{const data=await one(admin.from(table).select('*').eq('workspace_id',req.workspaceId).order('id',{ascending:false}));res.json({data})}catch(e){next(e)}}}
+
+function listRaw(table){return async(req,res,next)=>{try{const data=await one(admin.from(table).select('*').eq('workspace_id',req.workspaceId).order('id',{ascending:false}));res.json(data)}catch(e){next(e)}}}
 function listPaged(table){return async(req,res,next)=>{try{const page=Number(req.query.page||1),limit=50,from=(page-1)*limit;const {data,error,count}=await admin.from(table).select('*',{count:'exact'}).eq('workspace_id',req.workspaceId).range(from,from+limit-1).order('id',{ascending:false});if(error)throw error;res.json({data,total:count||0,current_page:page})}catch(e){next(e)}}}
 function create(table){return async(req,res,next)=>{try{const data=await one(admin.from(table).insert({workspace_id:req.workspaceId,...merge(req.body,['id','workspace_id','created_at','updated_at'])}).select().single());res.json({data})}catch(e){next(e)}}}
 function update(table){return async(req,res,next)=>{try{const data=await one(admin.from(table).update(merge(req.body,['id','workspace_id','created_at'])).eq('workspace_id',req.workspaceId).eq('id',req.params.id).select().single());res.json({data})}catch(e){next(e)}}}

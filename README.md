@@ -1,4 +1,4 @@
-# POWER SCALE — Vercel v4
+# POWER SCALE — Vercel v5
 
 Versão com Function explícita em `api/index.js`, diagnóstico seguro das variáveis do Supabase e API Node/Express no mesmo deployment do frontend.
 
@@ -35,3 +35,10 @@ Teste:
 
 ## Observação sobre o CSS
 O CSS visual original continua referenciado remotamente em `public/index.html`, pois os arquivos enviados anteriormente foram substituídos por uma página de bloqueio do Cloudflare. O bundle JS está local no projeto. Para tornar o frontend 100% independente do domínio anterior, será necessário obter o CSS/imagens reais.
+
+
+## v5 — correções de autenticação Google e Trackers
+- Callback Google aceita o `#access_token` retornado pelo Supabase OAuth.
+- `/workspace/platforms` retorna um array, como o bundle original espera.
+- `/workspace/trackers/archived` retorna `data` como array.
+- Corrige a tela preta em `/dashboard/trackers` causada por `T.map is not a function`.
