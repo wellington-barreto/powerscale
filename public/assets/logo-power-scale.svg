@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="84" viewBox="0 0 360 84" role="img" aria-label="POWER SCALE">
+  <rect width="360" height="84" fill="none"/>
+  <g transform="translate(8 10)">
+    <path d="M31 1 48 17 40 18 52 31 41 29 48 45 31 37 14 45 21 29 10 31 22 18 14 17Z" fill="#f59e0b"/>
+    <circle cx="31" cy="31" r="10" fill="#111827"/>
+    <path d="M26 35V21h7c6 0 9 3 9 7s-3 7-9 7h-2v7h-5Zm5-5h2c3 0 4-1 4-3s-1-3-4-3h-2v6Z" fill="#fff"/>
+  </g>
+  <text x="74" y="54" font-family="Inter,Arial,sans-serif" font-size="31" font-weight="800" letter-spacing="1.1" fill="currentColor">POWER SCALE</text>
+</svg>

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="POWER SCALE">
+  <rect width="64" height="64" rx="14" fill="#111827"/>
+  <path d="M32 6 46 19 40 20 50 31 41 29 46 44 32 37 18 44 23 29 14 31 24 20 18 19Z" fill="#f59e0b"/>
+  <path d="M26 42V20h9c8 0 12 4 12 10s-4 10-12 10h-3v2h-6Zm6-8h3c4 0 6-1 6-4s-2-4-6-4h-3v8Z" fill="#fff"/>
+</svg>
