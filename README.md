@@ -1,3 +1,7 @@
+# POWER SCALE — Vercel v4
+
+Versão com Function explícita em `api/index.js`, diagnóstico seguro das variáveis do Supabase e API Node/Express no mesmo deployment do frontend.
+
 # POWER SCALE — Vercel + Supabase
 
 Projeto pronto para GitHub e deploy na Vercel, mantendo a interface do bundle analisado e usando Supabase Auth/Postgres.

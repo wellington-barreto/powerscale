@@ -1,4 +1,11 @@
 {
-  "framework": null,
-  "cleanUrls": true
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/health", "destination": "/api/index" },
+    { "source": "/api/v1/:path*", "destination": "/api/index" },
+    { "source": "/api/debug/:path*", "destination": "/api/index" },
+    { "source": "/auth/callback", "destination": "/" },
+    { "source": "/dashboard/:path*", "destination": "/" },
+    { "source": "/dashboard", "destination": "/" }
+  ]
 }

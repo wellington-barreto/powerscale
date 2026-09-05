@@ -1,12 +1,33 @@
-# Deploy Vercel
+# POWER SCALE v4 — Deploy na Vercel
 
-Importe o repositório com a raiz do projeto apontando para a pasta que contém `package.json`, `src/` e `public/`.
+Esta versão usa uma Function explícita em `api/index.js`.
 
-Não configure Build Command nem Output Directory. O Vercel detecta `src/index.js` como aplicação Express.
+## Estrutura que deve aparecer na raiz do GitHub
 
-Variáveis obrigatórias:
-- SUPABASE_URL
-- SUPABASE_ANON_KEY
-- SUPABASE_SERVICE_ROLE_KEY
+- `api/index.js`
+- `package.json`
+- `vercel.json`
+- `public/`
+- `src/`
+- `supabase/`
 
-Após o deploy teste `/health`.
+Na Vercel use Root Directory `./` e Framework Preset `Other`.
+Não configure Output Directory.
+
+## Variáveis
+
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `APP_URL` (opcional)
+
+Depois de alterar variáveis, faça Redeploy.
+
+## Testes após deploy
+
+1. `/health`
+2. `/api/debug/config`
+3. login por e-mail/senha
+4. login Google
+
+`/api/debug/config` nunca mostra valores secretos; apenas `true/false`.

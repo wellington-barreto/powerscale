@@ -20,7 +20,29 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'tiny'));
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, name: 'POWER SCALE', runtime: 'vercel-express' });
+  res.json({
+    ok: true,
+    name: 'POWER SCALE',
+    runtime: process.env.VERCEL ? 'vercel-node' : 'node',
+    version: '0.4.0'
+  });
+});
+
+// Safe diagnostic endpoint: reports only whether configuration exists.
+// It never returns environment variable values or secrets.
+app.get('/api/debug/config', (_req, res) => {
+  res.json({
+    ok: true,
+    vercel: Boolean(process.env.VERCEL),
+    environment: process.env.VERCEL_ENV || process.env.NODE_ENV || 'unknown',
+    supabase: {
+      urlConfigured: Boolean(process.env.SUPABASE_URL),
+      anonKeyConfigured: Boolean(process.env.SUPABASE_ANON_KEY),
+      serviceRoleConfigured: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY)
+    },
+    appUrlConfigured: Boolean(process.env.APP_URL),
+    productionUrlConfigured: Boolean(process.env.VERCEL_PROJECT_PRODUCTION_URL)
+  });
 });
 
 app.use('/api/v1', router);
