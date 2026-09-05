@@ -54,7 +54,48 @@ A.get('/google-ads/synced-accounts',list('google_ads_accounts')); A.post('/googl
 
 for(const [path,table] of [['categories','financial_categories'],['entries','financial_entries'],['mining','financial_mining']]){A.get(`/financial/${path}`,list(table));A.post(`/financial/${path}`,create(table));A.put(`/financial/${path}/:id`,update(table));A.delete(`/financial/${path}/:id`,remove(table))}
 A.post('/financial/mining/:id/convert',async(req,res,next)=>{try{const m=await one(admin.from('financial_mining').select('*').eq('workspace_id',req.workspaceId).eq('id',req.params.id).single());const t=await one(admin.from('trackers').insert({workspace_id:req.workspaceId,name:m.name,mining_status:'destrave',payload:{source_mining_id:m.id}}).select().single());await one(admin.from('financial_mining').update({tracker_id:t.id,status:'converted'}).eq('id',m.id));res.json({success:true,tracker:t})}catch(e){next(e)}});
-A.get('/financial/company',async(req,res,next)=>{try{const s=await one(admin.from('financial_company_settings').select('settings').eq('workspace_id',req.workspaceId).maybeSingle());res.json({data:s?.settings||{}})}catch(e){next(e)}}); A.put('/financial/company',settingsUpsert('financial_company_settings'));
+A.get('/financial/company',async(req,res,next)=>{try{
+  const year=Number(req.query.year||new Date().getFullYear());
+  const [cats,stored]=await Promise.all([
+    one(admin.from('financial_categories').select('*').eq('workspace_id',req.workspaceId).order('id',{ascending:true})),
+    one(admin.from('financial_company_settings').select('settings').eq('workspace_id',req.workspaceId).maybeSingle())
+  ]);
+  const settings=stored?.settings||{};
+  const values=settings.values||{};
+  const rows=(Array.isArray(cats)?cats:[]).map(cat=>{
+    const categoryId=cat.id;
+    const yearValues=values?.[String(categoryId)]?.[String(year)]||{};
+    const months={};
+    for(let m=1;m<=12;m++) months[m]=Number(yearValues?.[String(m)]||0);
+    return {
+      category_id:categoryId,
+      category_name:cat.name||'',
+      category_type:cat.type||cat.category_type||'expense',
+      months,
+      by_currency:{},
+      total:Object.values(months).reduce((sum,v)=>sum+Number(v||0),0),
+      has_google_ads:false
+    };
+  });
+  res.json({data:{year,rows}})
+}catch(e){next(e)}});
+A.put('/financial/company',async(req,res,next)=>{try{
+  const categoryId=req.body.category_id;
+  const year=Number(req.body.year||new Date().getFullYear());
+  const month=Number(req.body.month);
+  const value=Number(req.body.value||0);
+  if(!categoryId||month<1||month>12)return res.status(400).json({message:'category_id, month e year são obrigatórios'});
+  const current=await one(admin.from('financial_company_settings').select('settings').eq('workspace_id',req.workspaceId).maybeSingle());
+  const settings=current?.settings&&typeof current.settings==='object'?current.settings:{};
+  const values=settings.values&&typeof settings.values==='object'?settings.values:{};
+  const cid=String(categoryId),ys=String(year),ms=String(month);
+  values[cid]=values[cid]&&typeof values[cid]==='object'?values[cid]:{};
+  values[cid][ys]=values[cid][ys]&&typeof values[cid][ys]==='object'?values[cid][ys]:{};
+  values[cid][ys][ms]=value;
+  const nextSettings={...settings,values};
+  await one(admin.from('financial_company_settings').upsert({workspace_id:req.workspaceId,settings:nextSettings},{onConflict:'workspace_id'}));
+  res.json({data:{success:true,category_id:categoryId,year,month,value}})
+}catch(e){next(e)}});
 A.get('/financial/viability',async(req,res,next)=>{try{const s=await one(admin.from('financial_viability_settings').select('settings').eq('workspace_id',req.workspaceId).maybeSingle());res.json({data:s?.settings||{}})}catch(e){next(e)}}); A.put('/financial/viability',settingsUpsert('financial_viability_settings'));
 A.get('/financial/dashboard',async(req,res,next)=>{try{let q=admin.from('financial_entries').select('*').eq('workspace_id',req.workspaceId);if(req.query.year)q=q.gte('entry_date',`${req.query.year}-01-01`).lte('entry_date',`${req.query.year}-12-31`);const rows=await one(q);const revenue=rows.filter(x=>x.type==='income').reduce((s,x)=>s+Number(x.amount),0),expenses=rows.filter(x=>x.type!=='income').reduce((s,x)=>s+Number(x.amount),0);res.json({data:{revenue,expenses,profit:revenue-expenses,entries:rows}})}catch(e){next(e)}});
 A.post('/dashboard',async(req,res,next)=>{try{const trackers=await count('trackers',req.workspaceId),visitors=await count('visitor_sessions',req.workspaceId);res.json({data:{trackers,visitors}})}catch(e){next(e)}}); A.post('/dashboard/charts/sales',async(req,res)=>res.json({data:[]}));
