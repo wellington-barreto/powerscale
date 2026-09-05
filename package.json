@@ -1,12 +1,15 @@
 {
   "name": "power-scale",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "dev": "node --watch server.js",
-    "start": "node server.js"
+    "dev": "node --watch dev-server.js",
+    "start": "node dev-server.js",
+    "check:assets": "node scripts/check-assets.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
