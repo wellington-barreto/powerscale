@@ -7,14 +7,46 @@ async function workspaceForUserUuid(uuid){if(!safeUuid.test(uuid))return null;co
 const merge=(body={},omit=[])=>Object.fromEntries(Object.entries(body).filter(([k])=>!omit.includes(k)));
 const one=async(q)=>{const {data,error}=await q;if(error)throw error;return data};
 
+function resolvePublicBase(req){
+  const normalize=(value)=>{
+    const raw=String(value||'').trim();
+    if(!raw || raw.includes('${')) return null;
+    const candidate=/^https?:\/\//i.test(raw)?raw:`https://${raw}`;
+    try {
+      const u=new URL(candidate);
+      if(!['http:','https:'].includes(u.protocol)) return null;
+      return u.origin.replace(/\/$/,'');
+    } catch { return null; }
+  };
+
+  // APP_URL has priority only when it is a real absolute URL. Vercel does not
+  // expand strings such as http://${VERCEL_PROJECT_PRODUCTION_URL} entered in
+  // the Environment Variables UI, so template-looking values are ignored.
+  const configured=normalize(process.env.APP_URL);
+  if(configured) return configured;
+
+  const production=normalize(process.env.VERCEL_PROJECT_PRODUCTION_URL);
+  if(production) return production;
+
+  const deployment=normalize(process.env.VERCEL_URL);
+  if(deployment) return deployment;
+
+  const forwardedProto=String(req.get('x-forwarded-proto')||req.protocol||'https').split(',')[0].trim();
+  const forwardedHost=String(req.get('x-forwarded-host')||req.get('host')||'').split(',')[0].trim();
+  const requestBase=normalize(`${forwardedProto}://${forwardedHost}`);
+  if(requestBase) return requestBase;
+
+  throw new Error('Não foi possível determinar a URL pública do POWER SCALE');
+}
+
 router.get('/settings/theme', async (_req,res)=>res.json({data:{name:'POWER SCALE',theme:'dark'}}));
 router.post('/auth/login',async(req,res,next)=>{try{const {email,password}=req.body;const {data,error}=await anon.auth.signInWithPassword({email,password});if(error)return res.status(401).json({message:'Credenciais inválidas'});await ensureUserWorkspace(data.user);const profile=await one(admin.from('profiles').select('*').eq('user_id',data.user.id).maybeSingle());res.json({token:data.session.access_token,user:{id:data.user.id,email:data.user.email,name:profile?.name||data.user.email,role:profile?.role||'user',preferences:profile?.preferences||{}}})}catch(e){next(e)}});
-router.get('/auth/google/login',(req,res)=>{const base=(process.env.APP_URL||`${req.protocol}://${req.get('host')}`).replace(/\/$/,'');const redirectTo=`${base}/auth/callback`;const url=new URL(`${process.env.SUPABASE_URL}/auth/v1/authorize`);url.searchParams.set('provider','google');url.searchParams.set('redirect_to',redirectTo);res.redirect(url.toString())});
+router.get('/auth/google/login',(req,res)=>{const base=resolvePublicBase(req);const redirectTo=`${base}/auth/callback`;const url=new URL(`${process.env.SUPABASE_URL}/auth/v1/authorize`);url.searchParams.set('provider','google');url.searchParams.set('redirect_to',redirectTo);res.redirect(url.toString())});
 // POWER SCALE Apps Script endpoints (called by Google Ads, so they are public and UUID-scoped)
 router.get('/google-ads/appscript/code/:uuid',async(req,res,next)=>{try{
   const member=await workspaceForUserUuid(req.params.uuid); if(!member)return res.status(404).type('text/plain').send('// POWER SCALE: instalação não encontrada');
   const template=fs.readFileSync(appScriptTemplatePath,'utf8');
-  const publicBase=(process.env.APP_URL||`${req.protocol}://${req.get('host')}`).replace(/\/$/,'');
+  const publicBase=resolvePublicBase(req);
   const apiBase=publicBase+'/api/v1';
   const code=template.replaceAll('{{USER_UUID}}',req.params.uuid).replaceAll('{{API_BASE_URL}}',apiBase);
   res.set('Cache-Control','no-store'); res.type('application/javascript; charset=utf-8').send(code);

@@ -24,7 +24,7 @@ app.get('/health', (_req, res) => {
     ok: true,
     name: 'POWER SCALE',
     runtime: process.env.VERCEL ? 'vercel-node' : 'node',
-    version: '0.7.0'
+    version: '0.8.0'
   });
 });
 
@@ -41,6 +41,7 @@ app.get('/api/debug/config', (_req, res) => {
       serviceRoleConfigured: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY)
     },
     appUrlConfigured: Boolean(process.env.APP_URL),
+    appUrlLooksValid: Boolean(process.env.APP_URL && !String(process.env.APP_URL).includes('${') && /^https?:\/\//i.test(String(process.env.APP_URL))),
     productionUrlConfigured: Boolean(process.env.VERCEL_PROJECT_PRODUCTION_URL)
   });
 });

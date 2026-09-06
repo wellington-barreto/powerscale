@@ -38,3 +38,8 @@ As telas de análise baseadas em Google Ads (campanhas, métricas diárias, disp
 
 ### Upgrade v9 → v10 após o primeiro teste
 Execute `supabase/v10-migration.sql` uma única vez antes de rodar novamente o Apps Script. Ele apenas remove as linhas de campanha que a v9 classificou incorretamente como `ad_group`; não altera tabelas nem apaga ad groups reais.
+
+
+## v11 — correção de URL pública no Vercel
+
+A v11 não depende de interpolação de variáveis na interface do Vercel. `APP_URL` deve ser uma URL absoluta (por exemplo `https://power-scale.vercel.app`). Valores literais como `http://${VERCEL_PROJECT_PRODUCTION_URL}` são ignorados automaticamente, e o backend usa `VERCEL_PROJECT_PRODUCTION_URL`, `VERCEL_URL` ou o host da requisição como fallback seguro. Não há migration de banco da v10 para a v11.
