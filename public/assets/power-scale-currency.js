@@ -370,9 +370,11 @@
   function mount(){
     css();if(document.getElementById('ps-fx-wrap'))return true;const header=document.querySelector('header');if(!header)return false;const right=[...header.querySelectorAll('div')].find(d=>d.className&&String(d.className).includes('flex items-center gap-2')&&d.querySelector('button'));if(!right)return false;
     const wrap=document.createElement('div');wrap.id='ps-fx-wrap';wrap.innerHTML=`<button class="ps-fx-btn" type="button" title="Moeda de exibição"><span class="ps-fx-dot"></span><span class="ps-fx-label"></span><span style="font-size:10px;opacity:.7">⌄</span></button><div class="ps-fx-pop"><div class="ps-fx-title">Moeda de exibição</div><div class="ps-fx-modes">${['ORIGINAL',...SUPPORTED].map(m=>`<button type="button" class="ps-fx-mode" data-mode="${m}">${m==='ORIGINAL'?'Orig.':m}</button>`).join('')}</div><div class="ps-fx-rates"></div></div>`;
-    right.insertBefore(wrap,right.firstChild);const btn=wrap.querySelector('.ps-fx-btn'),pop=wrap.querySelector('.ps-fx-pop');btn.addEventListener('click',e=>{e.stopPropagation();pop.classList.toggle('open');btn.classList.toggle('open',pop.classList.contains('open'));});document.addEventListener('click',e=>{if(!wrap.contains(e.target)){pop.classList.remove('open');btn.classList.remove('open')}});wrap.querySelectorAll('.ps-fx-mode').forEach(b=>b.addEventListener('click',()=>{const next=b.dataset.mode;if(next===mode)return;mode=next;localStorage.setItem(MODE_KEY,mode);renderPanel();liveRefresh();}));renderPanel();
-    // Atualiza cotação em segundo plano. Não reprojeta automaticamente a tela e não faz refetch.
-    refreshRates().then(renderPanel);
+    right.insertBefore(wrap,right.firstChild);const btn=wrap.querySelector('.ps-fx-btn'),pop=wrap.querySelector('.ps-fx-pop');btn.addEventListener('click',e=>{e.stopPropagation();pop.classList.toggle('open');btn.classList.toggle('open',pop.classList.contains('open'));});document.addEventListener('click',e=>{if(!wrap.contains(e.target)){pop.classList.remove('open');btn.classList.remove('open')}});wrap.querySelectorAll('.ps-fx-mode').forEach(b=>b.addEventListener('click',()=>{const next=b.dataset.mode;if(next===mode)return;mode=next;localStorage.setItem(MODE_KEY,mode);renderPanel();liveRefresh();if(mode!=='ORIGINAL'&&!Object.keys(apiRates).length){refreshRates().then(()=>{renderPanel();liveRefresh();});}}));renderPanel();
+    // Atualiza a cotação em segundo plano e, quando ela chega, reprojeta os dados já carregados.
+    // Isso corrige o caso em que o usuário troca de ORIGINAL para outra moeda antes da
+    // AwesomeAPI terminar: antes apenas o símbolo mudava porque cv() ainda não tinha taxa.
+    refreshRates().then(()=>{renderPanel();liveRefresh();});
     return true;
   }
   const obs=new MutationObserver(()=>mount()&&obs.disconnect());if(!mount())obs.observe(document.documentElement,{childList:true,subtree:true});
