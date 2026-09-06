@@ -310,6 +310,18 @@
     }
     return null;
   }
+  function publishQueryData(q,query,next){
+    // QueryClient#setQueryData pode manter referências via structuralSharing e alguns
+    // componentes do bundle não renderizam novamente. Query#setState publica o novo
+    // snapshot diretamente aos observers, sem invalidar e sem executar queryFn.
+    try{
+      if(typeof query?.setState==='function'){
+        query.setState({data:next,dataUpdatedAt:Date.now()});
+        return true;
+      }
+    }catch(e){console.warn('[POWER SCALE] setState local falhou',e);}
+    try{q.setQueryData(query.queryKey,next);return true;}catch{return false;}
+  }
   function projectQueryCache(){
     const q=window.__POWER_SCALE_QUERY_CLIENT__;
     if(!q?.getQueryCache)return false;
@@ -319,23 +331,27 @@
       const meta=snapshotMetaFromData(data);
       if(meta&&snapshots.has(meta.id)){
         const full=projectSnapshot(meta.id,mode),next=projectedShape(full,meta.shape);
-        if(next!=null){q.setQueryData(query.queryKey,next);changed++;continue;}
+        if(next!=null&&publishQueryData(q,query,next)){changed++;continue;}
       }
-      // Algumas telas só consultam o modo global para formatar a moeda e não carregam
-      // um payload conversível. Forçamos apenas um novo render local, sem refetch.
-      if(Array.isArray(data)){q.setQueryData(query.queryKey,data.slice());changed++;}
-      else if(data&&typeof data==='object'){q.setQueryData(query.queryKey,{...data});changed++;}
+      // Queries sem payload monetário ainda precisam renderizar novamente para que
+      // Intl.NumberFormat e os helpers globais usem a nova moeda selecionada.
+      let next=data;
+      if(Array.isArray(data))next=data.slice();
+      else if(data&&typeof data==='object')next={...data};
+      if(next!==data&&publishQueryData(q,query,next))changed++;
     }
     return changed>0;
   }
   function liveRefresh(){
-    // v13.9: operação estritamente local. Não dispara focus/online, não invalida
-    // React Query e não chama nenhum endpoint.
-    projectQueryCache();
+    // Operação 100% local: não invalida queries, não dispara focus/online e não faz fetch.
+    // Reprojeta imediatamente e novamente nos próximos frames para alcançar componentes
+    // que criam estado derivado depois do primeiro commit do React.
+    const run=()=>projectQueryCache();
+    run();
+    try{requestAnimationFrame(()=>{run();requestAnimationFrame(run);});}catch{}
+    setTimeout(run,25);
     const detail={mode};
     window.dispatchEvent(new CustomEvent('power-scale:currency-local',{detail}));
-    // Compatibilidade com o bundle original/POWER SCALE: este evento apenas reprojeta
-    // o cache em memória; não invalida queries e não dispara chamadas de rede.
     window.dispatchEvent(new CustomEvent('power-scale:currency-change',{detail}));
   }
   window.__POWER_SCALE_APPLY_CURRENCY__=projectQueryCache;
