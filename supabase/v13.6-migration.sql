@@ -1,0 +1,2 @@
+-- POWER SCALE v13.6
+-- Sem alterações de schema nesta versão.

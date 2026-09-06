@@ -93,13 +93,13 @@
     const av=Number(apiRates[key]?.rate);return Number.isFinite(av)&&av>0?av:null;
   }
   function cv(value,from,to=mode){const n=Number(value||0);if(to==='ORIGINAL'||from===to)return n;const r=rateFor(from,to);return r==null?n:n*r;}
-  const moneyFields = new Set(['cost','conversion_value','checkout_value','all_conversion_value','average_cpc','average_cpm','average_cost','budget','budget_daily','target_cpa','refund','organic_sales','profit','cost_per_conv','snapshots_sum_cost','snapshots_sum_conversion_value','snapshots_sum_checkout_value','snapshots_sum_all_conversion_value','total_cost','total_conversion_value','total_profit','revenue','investment','amount']);
+  const moneyFields = new Set(['cost','conversion_value','checkout_value','all_conversion_value','average_cpc','average_cpm','average_cost','budget','budget_daily','target_cpa','refund','organic_sales','profit','cost_per_conv','snapshots_sum_cost','snapshots_sum_conversion_value','snapshots_sum_checkout_value','snapshots_sum_all_conversion_value','snapshots_sum_refund','snapshots_sum_organic_sales','total_cost','total_conversion_value','total_profit','revenue','investment','amount']);
   function convertObjectMoney(obj,from,to){if(!obj||typeof obj!=='object')return obj;for(const k of Object.keys(obj)){if(moneyFields.has(k)&&typeof obj[k] !== 'object' && obj[k]!=null)obj[k]=cv(obj[k],from,to);}return obj;}
   function mapToTarget(map,to){let total=0;for(const [cur,val] of Object.entries(map||{})) total+=cv(val,cur,to);return {[to]:total};}
 
   function transformAccounts(j){
     const list=Array.isArray(j?.data)?j.data:[];
-    for(const acc of list){const from=String(acc.currency_code||'').toUpperCase();if(from===mode){acc.currency_code=mode;continue;}for(const c of acc.campaigns||[]){convertObjectMoney(c,from,mode);for(const k of Object.keys(c)){if(k.startsWith('snapshots_sum_')&&/cost|value/i.test(k))c[k]=cv(c[k],from,mode);}}acc.currency_code=mode;}
+    for(const acc of list){const from=String(acc.currency_code||'').toUpperCase();if(from===mode){acc.currency_code=mode;continue;}for(const c of acc.campaigns||[])convertObjectMoney(c,from,mode);acc.currency_code=mode;}
     return j;
   }
   function transformTrackers(j){
