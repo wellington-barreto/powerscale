@@ -1,4 +1,4 @@
-import {Router} from 'express'; import {admin,anon} from '../config/supabase.js'; import {auth,ensureUserWorkspace} from '../middleware/auth.js'; import fs from 'node:fs'; import path from 'node:path'; import crypto from 'node:crypto'; import {fileURLToPath} from 'node:url';
+import {Router} from 'express'; import {admin,anon} from '../config/supabase.js'; import multer from 'multer'; import {auth,ensureUserWorkspace} from '../middleware/auth.js'; import fs from 'node:fs'; import path from 'node:path'; import crypto from 'node:crypto'; import {fileURLToPath} from 'node:url';
 export const router=Router(); const A=Router();
 const __filename=fileURLToPath(import.meta.url); const __dirname=path.dirname(__filename);
 const appScriptTemplatePath=path.resolve(__dirname,'../appscript/power-scale-importer.template.js');
@@ -169,8 +169,63 @@ router.put('/profile/preferences',async(req,res,next)=>{try{const data=await one
 router.put('/profile/password',async(req,res,next)=>{try{const {error}=await admin.auth.admin.updateUserById(req.user.id,{password:req.body.password||req.body.new_password});if(error)throw error;res.json({success:true})}catch(e){next(e)}});
 router.get('/auth/google/ads-url',async(req,res)=>res.json({url:null,message:'Configure a integração OAuth do Google Ads no POWER SCALE.'}));
 
-A.get('/platforms',listRaw('platforms')); A.post('/platforms',create('platforms')); A.post('/platforms/:id',update('platforms'));
+const platformUpload=multer({storage:multer.memoryStorage(),limits:{fileSize:2*1024*1024},fileFilter:(_req,file,cb)=>cb(null,/^image\//i.test(file.mimetype))});
+const slugify=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+async function savePlatformLogo(req,slug){
+  if(!req.file)return null;
+  const ext=(req.file.mimetype.split('/')[1]||'png').replace('jpeg','jpg').replace(/[^a-z0-9]/g,'')||'png';
+  const key=`${req.workspaceId}/${slug}-${Date.now()}.${ext}`;
+  const {error}=await admin.storage.from('platform-logos').upload(key,req.file.buffer,{contentType:req.file.mimetype,upsert:true}); if(error)throw error;
+  return admin.storage.from('platform-logos').getPublicUrl(key).data.publicUrl;
+}
+const parseBool=v=>['1','true','on','yes'].includes(String(v??'').toLowerCase());
+A.get('/platforms',listRaw('platforms'));
+A.post('/platforms',platformUpload.single('logo'),async(req,res,next)=>{try{
+  const name=String(req.body?.name||'').trim(); if(!name)return res.status(422).json({message:'O nome da plataforma é obrigatório.'});
+  const slug=slugify(req.body?.slug||name); const logo=await savePlatformLogo(req,slug);
+  const row={workspace_id:req.workspaceId,name,slug,active:req.body?.active===undefined?true:parseBool(req.body.active),payload:{}}; if(logo)row.logo_url=logo;
+  const data=await one(admin.from('platforms').upsert(row,{onConflict:'workspace_id,slug'}).select().single()); res.json({data});
+}catch(e){next(e)}});
+A.post('/platforms/:id',platformUpload.single('logo'),async(req,res,next)=>{try{
+  const existing=await one(admin.from('platforms').select('*').eq('workspace_id',req.workspaceId).eq('id',req.params.id).single());
+  const name=String(req.body?.name??existing.name).trim(); if(!name)return res.status(422).json({message:'O nome da plataforma é obrigatório.'});
+  const slug=slugify(req.body?.slug||name); const logo=await savePlatformLogo(req,slug);
+  const patch={name,slug,active:req.body?.active===undefined?existing.active:parseBool(req.body.active),updated_at:new Date().toISOString()}; if(logo)patch.logo_url=logo;
+  const data=await one(admin.from('platforms').update(patch).eq('workspace_id',req.workspaceId).eq('id',req.params.id).select().single()); res.json({data});
+}catch(e){next(e)}});
 A.get('/user-platforms',list('user_platforms')); A.post('/user-platforms',create('user_platforms')); A.delete('/user-platforms/:id',remove('user_platforms'));
+function applyProductRule(name,rule){
+  const source=String(name||''); const ci=source.toLowerCase(); const pattern=String(rule.pattern||''); let extracted=null,matched=false;
+  try{
+    switch(rule.rule_type){
+      case 'bracket_position':{const parts=[...source.matchAll(/\[([^\]]+)\]/g)].map(m=>m[1].trim()); const pos=Math.max(1,Number(rule.position||1)); if(parts[pos-1]){matched=true;extracted=parts[pos-1];}break;}
+      case 'contains': matched=ci.includes(pattern.toLowerCase()); break;
+      case 'starts_with': matched=ci.startsWith(pattern.toLowerCase()); break;
+      case 'ends_with': matched=ci.endsWith(pattern.toLowerCase()); break;
+      case 'regex':{const rx=new RegExp(pattern,rule.case_sensitive?'':'i');const m=source.match(rx);if(m){matched=true;extracted=m[1]||m[0];}break;}
+    }
+  }catch{return null;}
+  if(!matched)return null;
+  let result=rule.result_mode==='fixed'?String(rule.result_value||'').trim():(extracted||String(rule.result_value||'').trim()||source);
+  if(rule.trim_result!==false)result=result.trim(); if(rule.result_case==='upper')result=result.toUpperCase(); else if(rule.result_case==='lower')result=result.toLowerCase(); else if(rule.result_case==='title')result=result.toLowerCase().replace(/(^|\s|[-_])\S/g,m=>m.toUpperCase());
+  return result||null;
+}
+async function rulesForWorkspace(workspaceId){return await one(admin.from('product_identification_rules').select('*').eq('workspace_id',workspaceId).eq('active',true).order('priority',{ascending:true}).order('id',{ascending:true}));}
+async function identifyProduct(workspaceId,name){const rules=await rulesForWorkspace(workspaceId);for(const r of rules){const product=applyProductRule(name,r);if(product)return{product,rule:r};}return{product:null,rule:null};}
+A.get('/product-identification-rules',async(req,res,next)=>{try{const data=await one(admin.from('product_identification_rules').select('*').eq('workspace_id',req.workspaceId).order('priority').order('id'));res.json({data})}catch(e){next(e)}});
+A.post('/product-identification-rules',async(req,res,next)=>{try{const b=req.body||{};const row={workspace_id:req.workspaceId,name:b.name||'Nova regra',priority:Number(b.priority||100),rule_type:b.rule_type||'contains',pattern:b.pattern||'',position:b.position?Number(b.position):null,result_mode:b.result_mode||'extract',result_value:b.result_value||null,result_case:b.result_case||'title',case_sensitive:!!b.case_sensitive,trim_result:b.trim_result!==false,action:b.action||'suggest',active:b.active!==false,payload:b.payload||{}};const data=await one(admin.from('product_identification_rules').insert(row).select().single());res.json({data})}catch(e){next(e)}});
+A.put('/product-identification-rules/:id',async(req,res,next)=>{try{const b=merge(req.body||{},['id','workspace_id','created_at']);b.updated_at=new Date().toISOString();const data=await one(admin.from('product_identification_rules').update(b).eq('workspace_id',req.workspaceId).eq('id',req.params.id).select().single());res.json({data})}catch(e){next(e)}});
+A.delete('/product-identification-rules/:id',remove('product_identification_rules'));
+A.post('/product-identification-rules/test',async(req,res,next)=>{try{const out=await identifyProduct(req.workspaceId,req.body?.campaign_name||'');res.json({data:{campaign_name:req.body?.campaign_name||'',product:out.product,rule:out.rule}})}catch(e){next(e)}});
+A.get('/product-identification-rules/suggestions',async(req,res,next)=>{try{const campaigns=await one(admin.from('google_ads_campaigns').select('id,name,external_id,account_id,tracker_id').eq('workspace_id',req.workspaceId).is('tracker_id',null).order('id'));const data=[];for(const c of campaigns){const out=await identifyProduct(req.workspaceId,c.name);data.push({...c,suggested_product:out.product,matched_rule:out.rule?{id:out.rule.id,name:out.rule.name,action:out.rule.action}:null});}res.json({data})}catch(e){next(e)}});
+A.post('/product-identification-rules/apply',async(req,res,next)=>{try{
+  const ids=Array.isArray(req.body?.campaign_ids)?req.body.campaign_ids.map(Number).filter(Boolean):null; let q=admin.from('google_ads_campaigns').select('*').eq('workspace_id',req.workspaceId).is('tracker_id',null); if(ids?.length)q=q.in('id',ids); const campaigns=await one(q); let linked=0,created=0,skipped=0; const details=[];
+  for(const c of campaigns){const out=await identifyProduct(req.workspaceId,c.name);if(!out.product){skipped++;details.push({campaign_id:c.id,status:'no_match'});continue;} const action=req.body?.force_action||out.rule?.action||'suggest'; if(action==='suggest'){skipped++;details.push({campaign_id:c.id,status:'suggested',product:out.product});continue;}
+    let tracker=await one(admin.from('trackers').select('id,name').eq('workspace_id',req.workspaceId).ilike('name',out.product).limit(1).maybeSingle()); if(!tracker){tracker=await one(admin.from('trackers').insert({workspace_id:req.workspaceId,name:out.product,mining_status:'em_teste',payload:{created_by:'product_rule',rule_id:out.rule?.id||null}}).select('id,name').single());created++;}
+    if(action==='create_link'||action==='link'){await one(admin.from('google_ads_campaigns').update({tracker_id:tracker.id,updated_at:new Date().toISOString()}).eq('workspace_id',req.workspaceId).eq('id',c.id));linked++;details.push({campaign_id:c.id,status:'linked',product:tracker.name,tracker_id:tracker.id});}else details.push({campaign_id:c.id,status:'created',product:tracker.name,tracker_id:tracker.id});
+  } res.json({data:{processed:campaigns.length,linked,created,skipped,details}});
+}catch(e){next(e)}});
+
 A.get('/trackers',async(req,res,next)=>{try{let q=admin.from('trackers').select('*,platform:platforms(*)',{count:'exact'}).eq('workspace_id',req.workspaceId).is('archived_at',null);if(req.query.q)q=q.ilike('name',`%${req.query.q}%`);const {data,error,count}=await q.order('id',{ascending:false});if(error)throw error;res.json({data:{data,total:count??data.length}})}catch(e){next(e)}});
 A.post('/trackers',create('trackers')); A.put('/trackers/:id',update('trackers'));
 A.delete('/trackers/:id',async(req,res,next)=>{try{await one(admin.from('trackers').update({archived_at:new Date().toISOString()}).eq('id',req.params.id).eq('workspace_id',req.workspaceId));res.json({success:true})}catch(e){next(e)}});
@@ -201,7 +256,42 @@ A.post('/google-ads/segments',async(req,res,next)=>{try{let campaignIds=null;if(
 A.post('/google-ads/metrics/funnel',async(req,res,next)=>{try{const b=req.body||{};let ids=[];if(b.google_ads_campaign_id)ids=[Number(b.google_ads_campaign_id)];else if(b.tracker_id){const cs=await one(admin.from('google_ads_campaigns').select('id').eq('workspace_id',req.workspaceId).eq('tracker_id',b.tracker_id));ids=cs.map(x=>x.id)}let rows=[];if(ids.length){let q=admin.from('google_ads_daily_metrics').select('*,campaign:google_ads_campaigns(name)').eq('workspace_id',req.workspaceId).in('campaign_id',ids);const from=String(b.from||'').slice(0,10),to=String(b.to||'').slice(0,10);if(from)q=q.gte('metric_date',from);if(to)q=q.lte('metric_date',to);rows=await one(q.order('metric_date'))}const sum=k=>rows.reduce((z,x)=>z+Number(x[k]||0),0);const impressions=sum('impressions'),clicks=sum('clicks'),cost=sum('cost'),conversions=sum('conversions'),conversionValue=sum('conversion_value'),checkouts=sum('checkout_conversions');const timeline=rows.map(x=>({date:x.metric_date,campaign_id:x.campaign_id,campaign_name:x.campaign?.name||null,impressions:Number(x.impressions||0),clicks:Number(x.clicks||0),cost:Number(x.cost||0),conversions:Number(x.conversions||0),conversion_value:Number(x.conversion_value||0),checkouts:Number(x.checkout_conversions||0)}));res.json({data:{view_type:b.view_type||'google_ads',funnel:{impressions,clicks,page_views:0,passed:0,checkouts,purchases:conversions,conversions},cards:{investment:{value:cost},result:{value:conversions},conversion_value:{value:conversionValue},checkout_conversions:{value:checkouts},cost_per_result:{value:conversions?cost/conversions:0}},charts:{timeline_daily:timeline},steps:[]}})}catch(e){next(e)}});
 A.get('/google-ads/kanban-rules',list('google_ads_kanban_rules')); A.post('/google-ads/kanban-rules',create('google_ads_kanban_rules'));
 A.get('/google-ads/integrations',list('google_ads_integrations'));
-A.get('/google-ads/report-daily',async(req,res,next)=>{try{let q=admin.from('google_ads_daily_metrics').select('*').eq('workspace_id',req.workspaceId).eq('campaign_id',req.query.campaign_id);if(req.query.start_date)q=q.gte('metric_date',req.query.start_date);if(req.query.end_date)q=q.lte('metric_date',req.query.end_date);const rows=await one(q.order('metric_date'));res.json({data:rows.map(x=>({...x,date:x.metric_date}))})}catch(e){next(e)}});
+A.get('/google-ads/report-daily',async(req,res,next)=>{try{
+  const campaignId=Number(req.query.campaign_id);
+  let q=admin.from('google_ads_daily_metrics').select('*').eq('workspace_id',req.workspaceId).eq('campaign_id',campaignId);
+  if(req.query.start_date)q=q.gte('metric_date',req.query.start_date);
+  if(req.query.end_date)q=q.lte('metric_date',req.query.end_date);
+  const rows=await one(q.order('metric_date'));
+  const campaign=await one(admin.from('google_ads_campaigns').select('*,account:google_ads_accounts(currency_code,name,external_id)').eq('workspace_id',req.workspaceId).eq('id',campaignId).maybeSingle());
+  const cp=campaign?.payload||{};
+  const targetCpa=Number(campaign?.target_cpa??cp.target_cpa??cp.targetCpa??0)||0;
+  const budget=Number(campaign?.budget_daily??cp.budget_daily??cp.budgetDaily??0)||0;
+  const mapped=rows.map(x=>{
+    const cost=Number(x.cost||0),clicks=Number(x.clicks||0),conv=Number(x.conversions||0),value=Number(x.conversion_value||0),refund=Number(x.refund||0),organic=Number(x.organic_sales||0);
+    return {...x,date:x.metric_date,
+      visits:Number(x.visits??x.clicks??0),
+      checkouts:Number(x.checkout_conversions||0),
+      bounce_rate:Number(x.bounce_rate||0),
+      top_share:x.top_impression_share_percent,
+      abs_top_share:x.absolute_top_impression_share_percent,
+      impression_share:x.impression_share_percent,
+      cpc:x.average_cpc!=null?Number(x.average_cpc):(clicks?cost/clicks:0),
+      budget:x.budget!=null?Number(x.budget):budget,
+      target_cpa:x.target_cpa!=null?Number(x.target_cpa):targetCpa,
+      refund,organic_sales:organic,
+      profit:value+organic-cost-refund,
+      cost_per_conv:conv?cost/conv:0
+    };
+  });
+  const sum=k=>mapped.reduce((a,x)=>a+Number(x[k]||0),0);
+  const impressions=sum('impressions'),clicks=sum('clicks'),cost=sum('cost'),conversions=sum('conversions'),conversionValue=sum('conversion_value'),organicSales=sum('organic_sales'),refund=sum('refund'),checkouts=sum('checkout_conversions'),visits=sum('visits');
+  const totals={impressions,clicks,cost,conversions,conversion_value:conversionValue,organic_sales:organicSales,refund,checkouts,checkout_conversions:checkouts,visits,
+    bounce_rate:clicks>0?Math.max(0,(clicks-visits)/clicks*100):0,
+    profit:conversionValue+organicSales-cost-refund,target_cpa:targetCpa,
+    all_conversions:sum('all_conversions'),all_conversion_value:sum('all_conversion_value')};
+  const outCampaign=campaign?{...campaign,currency_code:campaign.account?.currency_code||cp.currency_code||'BRL',target_cpa:targetCpa,budget_daily:budget}:{};
+  res.json({data:{campaign:outCampaign,totals,rows:mapped}})
+}catch(e){next(e)}});
 A.post('/google-ads/report-daily/note',async(req,res,next)=>{try{const b=req.body;const data=await one(admin.from('google_ads_daily_notes').upsert({workspace_id:req.workspaceId,campaign_id:b.campaign_id,note_date:b.date||b.note_date,note:b.note},{onConflict:'campaign_id,note_date'}).select().single());res.json(data)}catch(e){next(e)}});
 A.post('/google-ads/report-daily/override',async(req,res,next)=>{try{const b=req.body;const data=await one(admin.from('google_ads_daily_overrides').upsert({workspace_id:req.workspaceId,campaign_id:b.campaign_id,override_date:b.date||b.override_date,values:b.values||b},{onConflict:'campaign_id,override_date'}).select().single());res.json(data)}catch(e){next(e)}});
 A.get('/google-ads/synced-accounts',list('google_ads_accounts')); A.post('/google-ads/import-sync',async(req,res)=>res.json({success:true,queued:true}));
@@ -252,7 +342,20 @@ A.put('/financial/company',async(req,res,next)=>{try{
 }catch(e){next(e)}});
 A.get('/financial/viability',async(req,res,next)=>{try{const s=await one(admin.from('financial_viability_settings').select('settings').eq('workspace_id',req.workspaceId).maybeSingle());res.json({data:s?.settings||{}})}catch(e){next(e)}}); A.put('/financial/viability',settingsUpsert('financial_viability_settings'));
 A.get('/financial/dashboard',async(req,res,next)=>{try{let q=admin.from('financial_entries').select('*').eq('workspace_id',req.workspaceId);if(req.query.year)q=q.gte('entry_date',`${req.query.year}-01-01`).lte('entry_date',`${req.query.year}-12-31`);const rows=await one(q);const revenue=rows.filter(x=>x.type==='income').reduce((s,x)=>s+Number(x.amount),0),expenses=rows.filter(x=>x.type!=='income').reduce((s,x)=>s+Number(x.amount),0);res.json({data:{revenue,expenses,profit:revenue-expenses,entries:rows}})}catch(e){next(e)}});
-A.post('/dashboard',async(req,res,next)=>{try{const trackers=await count('trackers',req.workspaceId),visitors=await count('visitor_sessions',req.workspaceId);res.json({data:{trackers,visitors}})}catch(e){next(e)}}); A.post('/dashboard/charts/sales',async(req,res)=>res.json({data:[]}));
+async function dashboardMetrics(req){
+  const from=String(req.body?.from||'1900-01-01'),to=String(req.body?.to||'2999-12-31'),trackerId=req.body?.tracker_id?Number(req.body.tracker_id):null;
+  let cq=admin.from('google_ads_campaigns').select('id,name,tracker_id,account_id').eq('workspace_id',req.workspaceId); if(trackerId)cq=cq.eq('tracker_id',trackerId); const campaigns=await one(cq); const ids=campaigns.map(x=>x.id); if(!ids.length)return{rows:[],campaigns,accounts:[]};
+  const rows=await one(admin.from('google_ads_daily_metrics').select('*').eq('workspace_id',req.workspaceId).in('campaign_id',ids).gte('metric_date',from).lte('metric_date',to).order('metric_date'));
+  const aids=[...new Set(campaigns.map(x=>x.account_id).filter(Boolean))]; const accounts=aids.length?await one(admin.from('google_ads_accounts').select('id,currency_code,name').in('id',aids)):[]; return{rows,campaigns,accounts};
+}
+A.post('/dashboard',async(req,res,next)=>{try{
+  const {rows,campaigns,accounts}=await dashboardMetrics(req); const amap=new Map(accounts.map(a=>[a.id,a])); const cmap=new Map(campaigns.map(c=>[c.id,c])); const sum=k=>rows.reduce((a,x)=>a+Number(x[k]||0),0); const revenue=sum('conversion_value'),cost=sum('cost'),conversions=sum('conversions'),checkouts=sum('checkout_conversions'),impressions=sum('impressions'),clicks=sum('clicks'),profit=revenue-cost,roi=cost?profit/cost*100:0;
+  const byCurrency=new Map();for(const r of rows){const cur=amap.get(cmap.get(r.campaign_id)?.account_id)?.currency_code||'BRL';const x=byCurrency.get(cur)||{currency:cur,amount:0};x.amount+=Number(r.conversion_value||0);byCurrency.set(cur,x);} const purchase=[...byCurrency.values()];
+  const visitors=await (async()=>{let q=admin.from('visitor_sessions').select('*',{count:'exact',head:true}).eq('workspace_id',req.workspaceId).gte('started_at',`${req.body?.from||'1900-01-01'}T00:00:00`).lte('started_at',`${req.body?.to||'2999-12-31'}T23:59:59`);if(req.body?.tracker_id)q=q.eq('tracker_id',req.body.tracker_id);const {count}=await q;return count||0})();
+  const campaignAgg=new Map();for(const r of rows){const c=cmap.get(r.campaign_id);if(!c)continue;const a=campaignAgg.get(c.id)||{id:c.id,name:c.name,cost:0,conversion_value:0,conversions:0};a.cost+=Number(r.cost||0);a.conversion_value+=Number(r.conversion_value||0);a.conversions+=Number(r.conversions||0);campaignAgg.set(c.id,a);}const top=[...campaignAgg.values()].sort((a,b)=>b.cost-a.cost);
+  res.json({data:{cards:{purchase_by_currency:purchase,refund_by_currency:[],visitors:{value:visitors,trend:'flat',change_pct:0},checkouts:{value:checkouts,trend:'flat',change_pct:0},organic_sales:{value:0,trend:'flat',change_pct:0}},top_countries_sales:[],totals:{revenue,investment:cost,cost,conversions,checkouts,impressions,clicks,profit,roi},revenue,investment:cost,cost,conversions,profit,roi,top_campaigns:top.slice(0,10),worst_campaigns:[...top].sort((a,b)=>(a.conversion_value-a.cost)-(b.conversion_value-b.cost)).slice(0,10)}});
+}catch(e){next(e)}});
+A.post('/dashboard/charts/sales',async(req,res,next)=>{try{const {rows,campaigns,accounts}=await dashboardMetrics(req);const amap=new Map(accounts.map(a=>[a.id,a])),cmap=new Map(campaigns.map(c=>[c.id,c])),m=new Map();for(const r of rows){const cur=amap.get(cmap.get(r.campaign_id)?.account_id)?.currency_code||'BRL',key=`${r.metric_date}|${cur}`,x=m.get(key)||{date:r.metric_date,currency:cur,amount:0,revenue:0,cost:0};x.amount+=Number(r.conversion_value||0);x.revenue+=Number(r.conversion_value||0);x.cost+=Number(r.cost||0);m.set(key,x);}res.json({charts:{sales_daily_by_currency:[...m.values()]},data:[...m.values()]})}catch(e){next(e)}});
 A.get('/plan-usage',async(req,res)=>res.json({plan:'development',limits:{},usage:{}}));
 router.use('/workspace',A);
 

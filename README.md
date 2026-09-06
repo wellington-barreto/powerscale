@@ -1,3 +1,7 @@
+## POWER SCALE v12
+
+Correção da resposta de métricas diárias para o formato esperado pelo frontend (`data.campaign`, `data.totals`, `data.rows`). Não requer migration de banco.
+
 # POWER SCALE v9
 
 Versão Vercel + Supabase com Google Ads Apps Script em dois modos (Conta individual e MCC) e normalização completa dos dados importados.
@@ -43,3 +47,11 @@ Execute `supabase/v10-migration.sql` uma única vez antes de rodar novamente o A
 ## v11 — correção de URL pública no Vercel
 
 A v11 não depende de interpolação de variáveis na interface do Vercel. `APP_URL` deve ser uma URL absoluta (por exemplo `https://power-scale.vercel.app`). Valores literais como `http://${VERCEL_PROJECT_PRODUCTION_URL}` são ignorados automaticamente, e o backend usa `VERCEL_PROJECT_PRODUCTION_URL`, `VERCEL_URL` ou o host da requisição como fallback seguro. Não há migration de banco da v10 para a v11.
+
+
+## v13
+- Dashboard passa a agregar `google_ads_daily_metrics` por período/produto.
+- Cadastro/edição de plataformas aceita multipart e logo.
+- 27 plataformas e logos locais incluídos.
+- Tela `/product-rules.html` para regras parametrizadas de produto.
+- Execute `supabase/v13-migration.sql` antes do deploy.
