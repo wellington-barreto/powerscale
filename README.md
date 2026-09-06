@@ -1,10 +1,20 @@
-# POWER SCALE — Vercel v6
+# POWER SCALE v8
 
-Correção do módulo Financeiro > Resultados Empresa.
+Versão Vercel + Supabase com integração Google Ads Apps Script em dois modos:
 
-- `/workspace/financial/company?year=YYYY` agora retorna `{ data: { year, rows: [] } }` no formato esperado pelo frontend.
-- Cada row contém `category_id`, `category_name`, `category_type`, `months`, `by_currency`, `total` e `has_google_ads`.
-- `PUT /workspace/financial/company` persiste valores mensais em `financial_company_settings.settings.values`.
-- O bundle possui fallback `{rows:[]}` para impedir tela preta caso a API venha sem dados.
+- Conta individual
+- MCC / Manager Account
 
-Mantenha as variáveis SUPABASE_URL, SUPABASE_ANON_KEY e SUPABASE_SERVICE_ROLE_KEY na Vercel.
+A tela `/dashboard/integracao-appscript` permite alternar entre os dois scripts e copiá-los.
+
+## MCC
+A v8 usa `AdsManagerApp.accounts().withLimit(50).executeInParallel(...)`. Cada conta cliente executa o importador POWER SCALE no próprio contexto e envia seus dados usando o próprio Customer ID.
+
+## Importação
+A primeira importação de cada Customer ID usa até 730 dias. As seguintes usam 7 dias.
+
+## Deploy
+1. Configure as variáveis de ambiente da v7/v8 no Vercel.
+2. Execute `supabase/schema.sql` se ainda não aplicou o schema da v7.
+3. Publique o projeto no Vercel.
+4. Entre em `/dashboard/integracao-appscript` e escolha **Conta individual** ou **MCC / Administrador**.

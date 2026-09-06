@@ -1,13 +1,49 @@
-import {Router} from 'express'; import {admin,anon} from '../config/supabase.js'; import {auth,ensureUserWorkspace} from '../middleware/auth.js';
+import {Router} from 'express'; import {admin,anon} from '../config/supabase.js'; import {auth,ensureUserWorkspace} from '../middleware/auth.js'; import fs from 'node:fs'; import path from 'node:path'; import {fileURLToPath} from 'node:url';
 export const router=Router(); const A=Router();
+const __filename=fileURLToPath(import.meta.url); const __dirname=path.dirname(__filename);
+const appScriptTemplatePath=path.resolve(__dirname,'../appscript/power-scale-importer.template.js');
+const safeUuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+async function workspaceForUserUuid(uuid){if(!safeUuid.test(uuid))return null;const {data,error}=await admin.from('workspace_members').select('workspace_id,user_id').eq('user_id',uuid).eq('active',true).limit(1).maybeSingle();if(error)throw error;return data;}
 const merge=(body={},omit=[])=>Object.fromEntries(Object.entries(body).filter(([k])=>!omit.includes(k)));
 const one=async(q)=>{const {data,error}=await q;if(error)throw error;return data};
 
 router.get('/settings/theme', async (_req,res)=>res.json({data:{name:'POWER SCALE',theme:'dark'}}));
 router.post('/auth/login',async(req,res,next)=>{try{const {email,password}=req.body;const {data,error}=await anon.auth.signInWithPassword({email,password});if(error)return res.status(401).json({message:'Credenciais inválidas'});await ensureUserWorkspace(data.user);const profile=await one(admin.from('profiles').select('*').eq('user_id',data.user.id).maybeSingle());res.json({token:data.session.access_token,user:{id:data.user.id,email:data.user.email,name:profile?.name||data.user.email,role:profile?.role||'user',preferences:profile?.preferences||{}}})}catch(e){next(e)}});
 router.get('/auth/google/login',(req,res)=>{const base=(process.env.APP_URL||`${req.protocol}://${req.get('host')}`).replace(/\/$/,'');const redirectTo=`${base}/auth/callback`;const url=new URL(`${process.env.SUPABASE_URL}/auth/v1/authorize`);url.searchParams.set('provider','google');url.searchParams.set('redirect_to',redirectTo);res.redirect(url.toString())});
+// POWER SCALE Apps Script endpoints (called by Google Ads, so they are public and UUID-scoped)
+router.get('/google-ads/appscript/code/:uuid',async(req,res,next)=>{try{
+  const member=await workspaceForUserUuid(req.params.uuid); if(!member)return res.status(404).type('text/plain').send('// POWER SCALE: instalação não encontrada');
+  const template=fs.readFileSync(appScriptTemplatePath,'utf8');
+  res.set('Cache-Control','no-store'); res.type('application/javascript; charset=utf-8').send(template.replaceAll('{{USER_UUID}}',req.params.uuid));
+}catch(e){next(e)}});
+router.get('/google-ads/appscript/config/:uuid',async(req,res,next)=>{try{
+  const member=await workspaceForUserUuid(req.params.uuid); if(!member)return res.status(404).json({message:'Instalação não encontrada'});
+  const customerId=String(req.query.customer_id||'').replace(/\D/g,''); if(!customerId)return res.status(400).json({message:'customer_id é obrigatório'});
+  const {count,error}=await admin.from('google_ads_import_rows').select('*',{count:'exact',head:true}).eq('workspace_id',member.workspace_id).eq('account_external_id',customerId); if(error)throw error;
+  const first=!count; res.json({days_back:first?730:7,is_first_import:first,customer_id:customerId});
+}catch(e){next(e)}});
+router.post('/google-ads/appscript/log/:uuid',async(req,res,next)=>{try{
+  const member=await workspaceForUserUuid(req.params.uuid); if(!member)return res.status(404).json({message:'Instalação não encontrada'});
+  const customerId=String(req.body?.customer_id||'').replace(/\D/g,''); let accountId=null;
+  if(customerId){const {data:a}=await admin.from('google_ads_accounts').select('id').eq('workspace_id',member.workspace_id).eq('external_id',customerId).maybeSingle();accountId=a?.id||null;}
+  const {error}=await admin.from('google_ads_sync_logs').insert({workspace_id:member.workspace_id,account_id:accountId,status:req.body?.status||'client_log',started_at:req.body?.started_at||new Date().toISOString(),finished_at:req.body?.finished_at||new Date().toISOString(),payload:req.body||{}}); if(error)throw error;
+  res.json({ok:true});
+}catch(e){next(e)}});
+router.post('/google-ads/import/:uuid',async(req,res,next)=>{try{
+  const member=await workspaceForUserUuid(req.params.uuid); if(!member)return res.status(404).json({message:'Instalação não encontrada'});
+  const rows=Array.isArray(req.body?.data)?req.body.data:[]; if(!rows.length)return res.json({ok:true,received:0}); if(rows.length>1000)return res.status(413).json({message:'Batch acima do limite'});
+  const accounts=new Map(), campaigns=new Map();
+  for(const row of rows){const aid=row?.account?.id?String(row.account.id).replace(/\D/g,''):'';if(aid&&!accounts.has(aid))accounts.set(aid,row.account||{});const cid=row?.campaign?.id?String(row.campaign.id):'';if(aid&&cid&&!campaigns.has(cid))campaigns.set(cid,{accountExternalId:aid,...(row.campaign||{})});}
+  const accountDb=new Map();
+  for(const [externalId,a] of accounts){const {data,error}=await admin.from('google_ads_accounts').upsert({workspace_id:member.workspace_id,external_id:externalId,name:a.name||null,currency_code:a.currency||a.currency_code||null,source:'appscript',status:'active',sync_enabled:true,payload:a},{onConflict:'workspace_id,external_id'}).select('id,external_id').single();if(error)throw error;accountDb.set(externalId,data.id);}
+  for(const [externalId,c] of campaigns){const accountId=accountDb.get(c.accountExternalId);if(!accountId)continue;const {error}=await admin.from('google_ads_campaigns').upsert({workspace_id:member.workspace_id,account_id:accountId,external_id:externalId,name:c.name||('Campanha '+externalId),status:c.status||null,advertising_channel_type:c.channel_type||c.advertising_channel_type||null,payload:c},{onConflict:'workspace_id,external_id'});if(error)throw error;}
+  const inserts=rows.map(row=>({workspace_id:member.workspace_id,user_id:member.user_id,account_external_id:row?.account?.id?String(row.account.id).replace(/\D/g,''):null,campaign_external_id:row?.campaign?.id?String(row.campaign.id):null,segment_type:String(row?.segment||'unknown'),segment_date:row?.date||null,payload:row,imported_at:row?.imported_at||req.body?.imported_at||new Date().toISOString()}));
+  const {error:rawError}=await admin.from('google_ads_import_rows').insert(inserts);if(rawError)throw rawError;
+  res.json({ok:true,received:rows.length,accounts:accounts.size,campaigns:campaigns.size});
+}catch(e){next(e)}});
+
 router.use(auth);
-router.get('/user',async(req,res,next)=>{try{const p=await one(admin.from('profiles').select('*').eq('user_id',req.user.id).maybeSingle());res.json({id:req.user.id,email:req.user.email,name:p?.name||req.user.email,role:p?.role||req.workspaceRole||'user',preferences:p?.preferences||{}})}catch(e){next(e)}});
+router.get('/user',async(req,res,next)=>{try{const p=await one(admin.from('profiles').select('*').eq('user_id',req.user.id).maybeSingle());res.json({id:req.user.id,uuid:req.user.id,email:req.user.email,name:p?.name||req.user.email,role:p?.role||req.workspaceRole||'user',preferences:p?.preferences||{}})}catch(e){next(e)}});
 router.put('/profile',async(req,res,next)=>{try{const data=await one(admin.from('profiles').upsert({user_id:req.user.id,...merge(req.body,['user_id','role'])}).select().single());res.json(data)}catch(e){next(e)}});
 router.put('/profile/preferences',async(req,res,next)=>{try{const data=await one(admin.from('profiles').upsert({user_id:req.user.id,preferences:req.body.preferences||{}}).select().single());res.json(data)}catch(e){next(e)}});
 router.put('/profile/password',async(req,res,next)=>{try{const {error}=await admin.auth.admin.updateUserById(req.user.id,{password:req.body.password||req.body.new_password});if(error)throw error;res.json({success:true})}catch(e){next(e)}});
@@ -35,7 +71,7 @@ A.get('/visitors-logs/:id/replay',async(req,res,next)=>{try{const data=await one
 A.post('/visitors-logs/:id/insight',async(req,res,next)=>{try{const data=await one(admin.from('visitor_insights').insert({workspace_id:req.workspaceId,session_id:req.params.id,insight:'Insight pendente de integração com IA'}).select().single());res.json(data)}catch(e){next(e)}});
 
 A.get('/google-accounts',list('google_accounts')); A.get('/google-accounts/:id/ad-accounts',async(req,res,next)=>{try{const data=await one(admin.from('google_ads_accounts').select('*').eq('workspace_id',req.workspaceId).eq('google_account_id',req.params.id));res.json(data)}catch(e){next(e)}}); A.delete('/google-accounts/:id',remove('google_accounts'));
-A.get('/google-ads/appscript-accounts',async(req,res,next)=>{try{const data=await one(admin.from('google_ads_accounts').select('*').eq('workspace_id',req.workspaceId).eq('source','appscript'));res.json({data})}catch(e){next(e)}});
+A.get('/google-ads/appscript-accounts',async(req,res,next)=>{try{const data=await one(admin.from('google_ads_accounts').select('*').eq('workspace_id',req.workspaceId).eq('source','appscript').order('name',{ascending:true}));const last=await one(admin.from('google_ads_import_rows').select('imported_at').eq('workspace_id',req.workspaceId).order('imported_at',{ascending:false}).limit(1).maybeSingle());res.json({data,last_import:last?{completed_at:last.imported_at,status:'success'}:null})}catch(e){next(e)}});
 A.post('/google-ads/accounts',async(req,res,next)=>{try{const {start_date,end_date}=req.body;const accounts=await one(admin.from('google_ads_accounts').select('*').eq('workspace_id',req.workspaceId).eq('sync_enabled',true));for(const a of accounts){const camps=await one(admin.from('google_ads_campaigns').select('*').eq('account_id',a.id));a.campaigns=camps}res.json({data:accounts,start_date,end_date})}catch(e){next(e)}});
 A.patch('/google-ads/accounts/:id/status',fieldUpdate('google_ads_accounts','status'));
 A.patch('/google-ads/synced-accounts/:id/toggle',async(req,res,next)=>{try{const row=await one(admin.from('google_ads_accounts').select('sync_enabled').eq('workspace_id',req.workspaceId).eq('id',req.params.id).single());const data=await one(admin.from('google_ads_accounts').update({sync_enabled:!row.sync_enabled}).eq('id',req.params.id).select().single());res.json(data)}catch(e){next(e)}});
