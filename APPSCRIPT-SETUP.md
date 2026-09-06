@@ -25,3 +25,6 @@ O backend retorna 730 dias para uma conta ainda sem dados e 7 dias nas execuçõ
 - `GET /api/v1/google-ads/appscript/config/:uuid?customer_id=...`
 - `POST /api/v1/google-ads/import/:uuid`
 - `POST /api/v1/google-ads/appscript/log/:uuid`
+
+## v9 — normalização
+Cada lote recebido é preservado em `google_ads_import_rows` e, simultaneamente, normalizado em `google_ads_segments`. Registros `ad_group` formam a fonte canônica para `google_ads_daily_metrics`. O backend recalcula os dias afetados usando o RAW idempotente para evitar duplicação quando o script roda novamente.

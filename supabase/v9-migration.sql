@@ -1,0 +1,85 @@
+-- POWER SCALE v9 migration from v8
+-- POWER SCALE v9 migration: safe upgrades for existing v8 databases
+alter table public.google_ads_import_rows add column if not exists row_key text;
+alter table public.google_ads_import_rows add column if not exists segment_key text;
+alter table public.google_ads_import_rows add column if not exists ad_group_external_id text;
+alter table public.google_ads_import_rows add column if not exists dimension jsonb not null default '{}'::jsonb;
+create unique index if not exists uq_google_ads_import_rows_workspace_row_key on public.google_ads_import_rows(workspace_id,row_key);
+
+alter table public.google_ads_segments add column if not exists dimension jsonb not null default '{}'::jsonb;
+alter table public.google_ads_segments add column if not exists checkout_conversions numeric(18,6) default 0;
+alter table public.google_ads_segments add column if not exists checkout_value numeric(18,6) default 0;
+alter table public.google_ads_segments add column if not exists all_conversions numeric(18,6) default 0;
+alter table public.google_ads_segments add column if not exists all_conversion_value numeric(18,6) default 0;
+alter table public.google_ads_segments add column if not exists view_through_conversions numeric(18,6) default 0;
+alter table public.google_ads_segments add column if not exists cross_device_conversions numeric(18,6) default 0;
+alter table public.google_ads_segments add column if not exists average_cpc numeric(18,6);
+alter table public.google_ads_segments add column if not exists average_cpm numeric(18,6);
+alter table public.google_ads_segments add column if not exists ctr_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists impression_share_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists top_impression_share_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists absolute_top_impression_share_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists search_rank_lost_is_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists search_rank_lost_top_is_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists search_rank_lost_abs_top_is_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists search_budget_lost_is_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists search_budget_lost_top_is_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists search_budget_lost_abs_top_is_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists search_eligible_top_is_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists search_eligible_abs_top_is_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists search_exact_match_is_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists search_click_share_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists interactions bigint;
+alter table public.google_ads_segments add column if not exists interaction_rate_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists invalid_clicks bigint;
+alter table public.google_ads_segments add column if not exists invalid_click_rate_percent numeric(18,6);
+alter table public.google_ads_segments add column if not exists average_cost numeric(18,6);
+alter table public.google_ads_segments add column if not exists engagements bigint;
+alter table public.google_ads_segments add column if not exists engagement_rate numeric(18,6);
+alter table public.google_ads_segments add column if not exists active_view_impressions bigint;
+alter table public.google_ads_segments add column if not exists active_view_measurability numeric(18,6);
+alter table public.google_ads_segments add column if not exists active_view_viewability numeric(18,6);
+alter table public.google_ads_segments add column if not exists gmail_forwards bigint;
+alter table public.google_ads_segments add column if not exists gmail_saves bigint;
+alter table public.google_ads_segments add column if not exists gmail_secondary_clicks bigint;
+alter table public.google_ads_segments add column if not exists updated_at timestamptz default now();
+create unique index if not exists uq_google_ads_segments_dimension on public.google_ads_segments(campaign_id,segment_date,segment_type,segment_key);
+
+alter table public.google_ads_daily_metrics add column if not exists checkout_value numeric(18,6) default 0;
+alter table public.google_ads_daily_metrics add column if not exists all_conversion_value numeric(18,6) default 0;
+alter table public.google_ads_daily_metrics add column if not exists view_through_conversions numeric(18,6) default 0;
+alter table public.google_ads_daily_metrics add column if not exists cross_device_conversions numeric(18,6) default 0;
+alter table public.google_ads_daily_metrics add column if not exists average_cpc numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists average_cpm numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists ctr_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists impression_share_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists top_impression_share_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists absolute_top_impression_share_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists search_rank_lost_is_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists search_rank_lost_top_is_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists search_rank_lost_abs_top_is_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists search_budget_lost_is_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists search_budget_lost_top_is_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists search_budget_lost_abs_top_is_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists search_eligible_top_is_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists search_eligible_abs_top_is_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists search_exact_match_is_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists search_click_share_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists interactions bigint;
+alter table public.google_ads_daily_metrics add column if not exists interaction_rate_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists invalid_clicks bigint;
+alter table public.google_ads_daily_metrics add column if not exists invalid_click_rate_percent numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists average_cost numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists engagements bigint;
+alter table public.google_ads_daily_metrics add column if not exists engagement_rate numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists active_view_impressions bigint;
+alter table public.google_ads_daily_metrics add column if not exists active_view_measurability numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists active_view_viewability numeric(18,6);
+alter table public.google_ads_daily_metrics add column if not exists gmail_forwards bigint;
+alter table public.google_ads_daily_metrics add column if not exists gmail_saves bigint;
+alter table public.google_ads_daily_metrics add column if not exists gmail_secondary_clicks bigint;
+
+-- v9: campaign IDs are scoped to a Google Ads account
+alter table public.google_ads_campaigns drop constraint if exists google_ads_campaigns_workspace_id_external_id_key;
+create unique index if not exists uq_google_ads_campaigns_workspace_account_external on public.google_ads_campaigns(workspace_id,account_id,external_id);
+
