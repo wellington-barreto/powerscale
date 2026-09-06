@@ -31,3 +31,12 @@ Depois de alterar variáveis, faça Redeploy.
 4. login Google
 
 `/api/debug/config` nunca mostra valores secretos; apenas `true/false`.
+
+
+## POWER SCALE v10
+- Loader individual e MCC usam URL absoluta do domínio atual.
+- O importador usa `APP_URL` para montar endpoints absolutos de config/import/log.
+- Métricas diárias são enviadas como `campaign_level` e normalizadas em `google_ads_daily_metrics`.
+- Bancos vindos da v9 sem `campaign_level` são tratados como primeira importação e refazem o histórico.
+- Períodos: `APPSCRIPT_FIRST_IMPORT_DAYS` (padrão 730) e `APPSCRIPT_INCREMENTAL_DAYS` (padrão 7).
+- Não há alteração de schema da v9 para a v10.

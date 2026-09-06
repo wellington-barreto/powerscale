@@ -318,24 +318,20 @@ function fetchAdGroupData(_0x214aa8, _0x60255f, _0x4ccb00) {
 }
 function fetchCampaignLevel(_0x441d19, _0x4bc1b5, _0x578937, _0x51b1d2) {
   const _0x222ccc = [];
-  const _0x3e56ad = [];
   const _0x27a93a = "\n    SELECT\n      customer.id, customer.descriptive_name,\n      campaign.id, campaign.name, campaign.status, campaign.bidding_strategy_type,\n      campaign.target_cpa.target_cpa_micros, campaign.target_roas.target_roas,\n      campaign.maximize_conversions.target_cpa_micros,\n      metrics.impressions, metrics.clicks, metrics.cost_micros,\n      metrics.conversions, metrics.conversions_value,\n      metrics.all_conversions, metrics.all_conversions_value,\n      metrics.average_cpc, metrics.average_cpm,\n      metrics.search_impression_share,\n      metrics.top_impression_percentage,\n      metrics.absolute_top_impression_percentage,\n      metrics.search_rank_lost_impression_share,\n      metrics.search_rank_lost_top_impression_share,\n      metrics.search_rank_lost_absolute_top_impression_share,\n      metrics.search_budget_lost_impression_share,\n      metrics.search_budget_lost_top_impression_share,\n      metrics.search_budget_lost_absolute_top_impression_share,\n      metrics.search_top_impression_share,\n      metrics.search_absolute_top_impression_share,\n      metrics.search_exact_match_impression_share,\n      metrics.search_click_share,\n      metrics.interactions, metrics.interaction_rate,\n      metrics.invalid_clicks, metrics.invalid_click_rate,\n      metrics.average_cost,\n      segments.date\n    FROM campaign\n    WHERE segments.date BETWEEN '" + _0x441d19.start + "' AND '" + _0x441d19.end + "'\n      AND campaign.status != 'REMOVED'\n  ";
-  const _0x6cdba4 = AdsApp.search(_0x27a93a);
-  while (_0x6cdba4.hasNext()) {
-    const _0x12f751 = _0x6cdba4.next();
-    const _0x1237e5 = String(_0x12f751.campaign.id);
-    const _0x4575d4 = _0x12f751.segments.date;
-    const _0x2574c2 = _0x4bc1b5[_0x1237e5] || {};
-    const _0x1fdd0c = !!_0x51b1d2[_0x1237e5 + '|' + _0x4575d4];
-    if (!_0x1fdd0c) {
-      const _0xc11e49 = Number(_0x12f751.metrics.impressions) || 0x0;
-      const _0x490d09 = Number(_0x12f751.metrics.costMicros) || 0x0;
-      if (_0xc11e49 === 0x0 && _0x490d09 === 0x0) {
-        continue;
-      }
+  try {
+    const _0x6cdba4 = AdsApp.search(_0x27a93a);
+    while (_0x6cdba4.hasNext()) {
+      const _0x12f751 = _0x6cdba4.next();
+      const _0x1237e5 = String(_0x12f751.campaign.id);
+      const _0x4575d4 = _0x12f751.segments.date;
+      const _0x2574c2 = _0x4bc1b5[_0x1237e5] || {};
+      const _0xc11e49 = Number(_0x12f751.metrics.impressions) || 0;
+      const _0x490d09 = Number(_0x12f751.metrics.costMicros) || 0;
+      if (_0xc11e49 === 0 && _0x490d09 === 0) continue;
       _0x222ccc.push({
-        'source': "google_ads",
-        'segment': "ad_group",
+        'source': 'google_ads',
+        'segment': 'campaign_level',
         'date': _0x4575d4,
         'account': {
           'id': String(_0x12f751.customer.id),
@@ -346,49 +342,24 @@ function fetchCampaignLevel(_0x441d19, _0x4bc1b5, _0x578937, _0x51b1d2) {
           'name': _0x12f751.campaign.name,
           'status': _0x12f751.campaign.status,
           'bidding_strategy': _0x12f751.campaign.biddingStrategyType,
-          'target_cpa': _0x2574c2.target_cpa || microsToCurrency(_0x12f751.campaign?.["targetCpa"]?.["targetCpaMicros"]) || microsToCurrency(_0x12f751.campaign?.["maximizeConversions"]?.["targetCpaMicros"]) || null,
-          'target_roas': _0x12f751.campaign?.["targetRoas"]?.["targetRoas"] || null,
+          'target_cpa': _0x2574c2.target_cpa || microsToCurrency(_0x12f751.campaign?.['targetCpa']?.['targetCpaMicros']) || microsToCurrency(_0x12f751.campaign?.['maximizeConversions']?.['targetCpaMicros']) || null,
+          'target_roas': _0x12f751.campaign?.['targetRoas']?.['targetRoas'] || null,
           'budget_daily': _0x2574c2.budget_daily || null
         },
         'metrics': buildMetrics(_0x12f751.metrics, {
           'checkout': _0x578937[_0x1237e5 + '|' + _0x4575d4] || null
         }),
-        'imported_at': Utilities.formatDate(new Date(), "GMT", "yyyy-MM-dd'T'HH:mm:ss'Z'")
-      });
-    } else {
-      const _0x40f95a = buildMetrics(_0x12f751.metrics);
-      const _0x163ef7 = _0x40f95a.impression_share_percent != null || _0x40f95a.top_impression_share_percent != null || _0x40f95a.absolute_top_impression_share_percent != null || _0x40f95a.search_rank_lost_is_percent != null || _0x40f95a.search_budget_lost_is_percent != null || _0x40f95a.search_click_share_percent != null;
-      if (!_0x163ef7) {
-        continue;
-      }
-      _0x40f95a.impressions = 0x0;
-      _0x40f95a.clicks = 0x0;
-      _0x40f95a.cost = 0x0;
-      _0x40f95a.conversions = 0x0;
-      _0x40f95a.conversion_value = 0x0;
-      _0x40f95a.ctr_percent = 0x0;
-      _0x3e56ad.push({
-        'source': "google_ads",
-        'segment': "ad_group",
-        'date': _0x4575d4,
-        'account': {
-          'id': String(_0x12f751.customer.id),
-          'name': _0x12f751.customer.descriptiveName
-        },
-        'campaign': {
-          'id': _0x1237e5,
-          'name': _0x12f751.campaign.name,
-          'status': _0x12f751.campaign.status
-        },
-        'metrics': _0x40f95a,
-        'imported_at': Utilities.formatDate(new Date(), "GMT", "yyyy-MM-dd'T'HH:mm:ss'Z'")
+        'imported_at': Utilities.formatDate(new Date(), 'GMT', "yyyy-MM-dd'T'HH:mm:ss'Z'")
       });
     }
+  } catch (_0xerr) {
+    logErr('campaign_level', 'erro: ' + _0xerr.message);
+    return;
   }
-  Logger.log("[campaign_fallback] " + _0x222ccc.length + " | [campaign_share] " + _0x3e56ad.length);
+  Logger.log('[campaign_level] ' + _0x222ccc.length + ' registros');
   flushSegment(_0x222ccc);
-  flushSegment(_0x3e56ad);
 }
+
 function fetchGenderData(_0x230252) {
   const _0xb3eb55 = [];
   const _0xd1dc92 = "\n    SELECT\n      customer.id, customer.descriptive_name,\n      campaign.id, campaign.name,\n      ad_group.id, ad_group.name,\n      ad_group_criterion.gender.type, ad_group_criterion.criterion_id, ad_group_criterion.bid_modifier,\n      metrics.impressions, metrics.clicks, metrics.cost_micros,\n      metrics.conversions, metrics.conversions_value, metrics.all_conversions, metrics.average_cpc,\n      segments.date\n    FROM gender_view\n    WHERE segments.date BETWEEN '" + _0x230252.start + "' AND '" + _0x230252.end + "'\n  ";
@@ -1308,7 +1279,7 @@ function sendToApi(_0xcd4b40) {
       'data': _0xcd4b40
     })
   };
-  const _0xea2a8c = UrlFetchApp.fetch("https://power-scale.vercel.app/api/v1/google-ads/import/{{USER_UUID}}", _0x1514c8);
+  const _0xea2a8c = UrlFetchApp.fetch("{{API_BASE_URL}}/google-ads/import/{{USER_UUID}}", _0x1514c8);
   const _0x4e2366 = _0xea2a8c.getResponseCode();
   Logger.log("Status: " + _0x4e2366 + " | Batch: " + _0xcd4b40.length);
   if (_0x4e2366 >= 0x190) {
@@ -1320,7 +1291,7 @@ function reportRunToBackend(_0x94420a) {
     return;
   }
   try {
-    const _0x4a8250 = "https://power-scale.vercel.app/api/v1/google-ads/import/{{USER_UUID}}".replace("/google-ads/import/", "/google-ads/appscript/log/");
+    const _0x4a8250 = "{{API_BASE_URL}}/google-ads/import/{{USER_UUID}}".replace("/google-ads/import/", "/google-ads/appscript/log/");
     let _0xf1d1af = null;
     try {
       _0xf1d1af = AdsApp.currentAccount().getCustomerId();
@@ -1357,7 +1328,7 @@ function debugPayload(_0x2b55dd) {
 function fetchRunConfig() {
   try {
     const _0x371331 = AdsApp.currentAccount().getCustomerId();
-    const _0x5127d6 = "https://power-scale.vercel.app/api/v1/google-ads/import/{{USER_UUID}}".replace("/google-ads/import/", "/google-ads/appscript/config/") + "?customer_id=" + encodeURIComponent(_0x371331);
+    const _0x5127d6 = "{{API_BASE_URL}}/google-ads/import/{{USER_UUID}}".replace("/google-ads/import/", "/google-ads/appscript/config/") + "?customer_id=" + encodeURIComponent(_0x371331);
     const _0x2e4a54 = UrlFetchApp.fetch(_0x5127d6, {
       'muteHttpExceptions': true
     });

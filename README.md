@@ -25,3 +25,16 @@ Versão Vercel + Supabase com Google Ads Apps Script em dois modos (Conta indivi
 
 ## Observação sobre telas
 As telas de análise baseadas em Google Ads (campanhas, métricas diárias, dispositivos, gênero, idade, palavras-chave, termos, posicionamentos, dias, anúncios, públicos e demais segmentos) passam a receber dados normalizados. Métricas próprias do funil do site/tracker, como `page_views` e `passed`, não são dados do Google Ads e continuam dependendo do tracker POWER SCALE.
+
+
+## POWER SCALE v10
+- Loader individual e MCC usam URL absoluta do domínio atual.
+- O importador usa `APP_URL` para montar endpoints absolutos de config/import/log.
+- Métricas diárias são enviadas como `campaign_level` e normalizadas em `google_ads_daily_metrics`.
+- Bancos vindos da v9 sem `campaign_level` são tratados como primeira importação e refazem o histórico.
+- Períodos: `APPSCRIPT_FIRST_IMPORT_DAYS` (padrão 730) e `APPSCRIPT_INCREMENTAL_DAYS` (padrão 7).
+- Não há alteração de schema da v9 para a v10.
+
+
+### Upgrade v9 → v10 após o primeiro teste
+Execute `supabase/v10-migration.sql` uma única vez antes de rodar novamente o Apps Script. Ele apenas remove as linhas de campanha que a v9 classificou incorretamente como `ad_group`; não altera tabelas nem apaga ad groups reais.

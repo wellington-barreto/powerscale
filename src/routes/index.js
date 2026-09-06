@@ -14,13 +14,23 @@ router.get('/auth/google/login',(req,res)=>{const base=(process.env.APP_URL||`${
 router.get('/google-ads/appscript/code/:uuid',async(req,res,next)=>{try{
   const member=await workspaceForUserUuid(req.params.uuid); if(!member)return res.status(404).type('text/plain').send('// POWER SCALE: instalação não encontrada');
   const template=fs.readFileSync(appScriptTemplatePath,'utf8');
-  res.set('Cache-Control','no-store'); res.type('application/javascript; charset=utf-8').send(template.replaceAll('{{USER_UUID}}',req.params.uuid));
+  const publicBase=(process.env.APP_URL||`${req.protocol}://${req.get('host')}`).replace(/\/$/,'');
+  const apiBase=publicBase+'/api/v1';
+  const code=template.replaceAll('{{USER_UUID}}',req.params.uuid).replaceAll('{{API_BASE_URL}}',apiBase);
+  res.set('Cache-Control','no-store'); res.type('application/javascript; charset=utf-8').send(code);
 }catch(e){next(e)}});
 router.get('/google-ads/appscript/config/:uuid',async(req,res,next)=>{try{
   const member=await workspaceForUserUuid(req.params.uuid); if(!member)return res.status(404).json({message:'Instalação não encontrada'});
   const customerId=String(req.query.customer_id||'').replace(/\D/g,''); if(!customerId)return res.status(400).json({message:'customer_id é obrigatório'});
-  const {count,error}=await admin.from('google_ads_import_rows').select('*',{count:'exact',head:true}).eq('workspace_id',member.workspace_id).eq('account_external_id',customerId); if(error)throw error;
-  const first=!count; res.json({days_back:first?730:7,is_first_import:first,customer_id:customerId});
+  // A conta só é considerada inicializada depois que existem métricas canônicas de campanha.
+  // Isso permite que bancos vindos da v9 (que possuíam raw/segmentos, mas não campaign_level)
+  // refaçam automaticamente o histórico na primeira execução da v10.
+  const {count,error}=await admin.from('google_ads_import_rows').select('*',{count:'exact',head:true})
+    .eq('workspace_id',member.workspace_id).eq('account_external_id',customerId).eq('segment_type','campaign_level'); if(error)throw error;
+  const first=!count;
+  const firstDays=Math.max(1,Math.min(3650,Number(process.env.APPSCRIPT_FIRST_IMPORT_DAYS||730)||730));
+  const incrementalDays=Math.max(1,Math.min(365,Number(process.env.APPSCRIPT_INCREMENTAL_DAYS||7)||7));
+  res.json({days_back:first?firstDays:incrementalDays,is_first_import:first,customer_id:customerId,first_import_days:firstDays,incremental_days:incrementalDays});
 }catch(e){next(e)}});
 router.post('/google-ads/appscript/log/:uuid',async(req,res,next)=>{try{
   const member=await workspaceForUserUuid(req.params.uuid); if(!member)return res.status(404).json({message:'Instalação não encontrada'});
@@ -56,7 +66,7 @@ router.post('/google-ads/import/:uuid',async(req,res,next)=>{try{
     gmail_secondary_clicks:m?.gmail_secondary_clicks==null?null:num(m.gmail_secondary_clicks)
   });
   const dimensionFor=row=>{const t=String(row?.segment||'unknown');const keys={
-    campaign_roster:['campaign'], ad_group:['ad_group'], gender:['gender'], age_range:['age_range'], audience:['audience'], keyword:['keyword'], device:['device'], ad:['ad'],
+    campaign_roster:['campaign'], campaign_level:['campaign'], ad_group:['ad_group'], gender:['gender'], age_range:['age_range'], audience:['audience'], keyword:['keyword'], device:['device'], ad:['ad'],
     hour_of_day:['hour','device'], day_of_week:['day_of_week'], location:['location'], placement:['placement'], search_term:['search_term'], asset:['asset'], labels:['campaign','ad_group'],
     video:['video','ad_group'], pmax_asset_group:['asset_group'], pmax_asset:['asset_group','asset'], display_creative:['creative','ad_group'], demand_gen_creative:['creative','ad_group']
   }[t]||[];const o={};for(const k of keys)if(row?.[k]!==undefined)o[k]=row[k];return o};
@@ -77,7 +87,7 @@ router.post('/google-ads/import/:uuid',async(req,res,next)=>{try{
     case 'location': return text(pick(d.canonical_name,d.name,d.country_code,d.country_criterion_id))||'location'; case 'placement': return text(pick(d.name,d.url,d.placement_id))||'placement';
     case 'search_term': return text(pick(d.term,d.match_type))||'search_term'; case 'asset': return text(pick(d.name,d.text,d.id))||'asset'; case 'video': return text(pick(d.title,d.id))||'video';
     case 'pmax_asset_group': return text(pick(d.name,d.id))||'pmax_asset_group'; case 'pmax_asset': return text(pick(d.asset?.name,d.asset?.id))||'pmax_asset';
-    case 'display_creative': case 'demand_gen_creative': return text(pick(d.name,d.id))||t; case 'labels': return stable(d); case 'ad_group': return text(pick(d.name,d.id))||'campaign';
+    case 'display_creative': case 'demand_gen_creative': return text(pick(d.name,d.id))||t; case 'labels': return stable(d); case 'campaign_level': return 'campaign'; case 'ad_group': return text(pick(d.name,d.id))||'campaign';
     default:return stable(d)||t;
   }};
 
@@ -95,31 +105,27 @@ router.post('/google-ads/import/:uuid',async(req,res,next)=>{try{
     // Raw identity includes the original ad group/dimension so repeated syncs are idempotent without collapsing source rows.
     const rk=sha([aid||'',cid||'',dt||'',st,String(row?.ad_group?.id||''),stable(dim)].join('|'));
     raw.push({row_key:rk,workspace_id:member.workspace_id,user_id:member.user_id,account_external_id:aid,campaign_external_id:cid,segment_type:st,segment_date:dt,segment_key:sk,ad_group_external_id:row?.ad_group?.id?String(row.ad_group.id):null,dimension:segmentData,payload:row,imported_at:row?.imported_at||req.body?.imported_at||new Date().toISOString()});
-    if(campaignId && st!=='campaign_roster'){
+    if(campaignId && st!=='campaign_roster' && st!=='campaign_level'){
       const ak=[campaignId,dt||'',st,sk].join('|'); const m=metricCols(row?.metrics||{});
       if(!segAgg.has(ak))segAgg.set(ak,{workspace_id:member.workspace_id,campaign_id:campaignId,segment_date:dt,segment_type:st,segment_key:sk,dimension:segmentData,...m,payload:row,updated_at:new Date().toISOString(),_weight:num(m.impressions)});
       else{const a=segAgg.get(ak),w=num(m.impressions),oldW=a._weight||0;for(const k of ['impressions','clicks','cost','conversions','conversion_value','checkout_conversions','checkout_value','all_conversions','all_conversion_value','view_through_conversions','cross_device_conversions','interactions','invalid_clicks','engagements','active_view_impressions','gmail_forwards','gmail_saves','gmail_secondary_clicks'])a[k]=num(a[k])+num(m[k]);for(const k of ['average_cpc','average_cpm','ctr_percent','impression_share_percent','top_impression_share_percent','absolute_top_impression_share_percent','search_rank_lost_is_percent','search_rank_lost_top_is_percent','search_rank_lost_abs_top_is_percent','search_budget_lost_is_percent','search_budget_lost_top_is_percent','search_budget_lost_abs_top_is_percent','search_eligible_top_is_percent','search_eligible_abs_top_is_percent','search_exact_match_is_percent','search_click_share_percent','interaction_rate_percent','invalid_click_rate_percent','average_cost','engagement_rate','active_view_measurability','active_view_viewability'])if(m[k]!=null)a[k]=(a[k]==null||oldW+w===0)?num(m[k]):((num(a[k])*oldW+num(m[k])*w)/(oldW+w));a._weight=oldW+w;}
     }
-    if(campaignId && st==='ad_group' && dt)affected.set(campaignId+'|'+dt,{campaignId,dt,accountId:accountDb.get(aid)||null,aid,cid});
+    if(campaignId && st==='campaign_level' && dt)affected.set(campaignId+'|'+dt,{campaignId,dt,accountId:accountDb.get(aid)||null,aid,cid});
   }
   const segs=[...segAgg.values()].map(({_weight,...x})=>x);
   if(raw.length){const {error}=await admin.from('google_ads_import_rows').upsert(raw,{onConflict:'workspace_id,row_key'});if(error)throw error;}
   if(segs.length){const {error}=await admin.from('google_ads_segments').upsert(segs,{onConflict:'campaign_id,segment_date,segment_type,segment_key'});if(error)throw error;}
 
-  // Rebuild canonical daily campaign metrics from idempotent ad_group raw rows. This avoids double counting on repeated imports and across 500-row batches.
-  for(const {campaignId,dt,accountId,cid} of affected.values()){
-    const {data:rr,error}=await admin.from('google_ads_import_rows').select('payload').eq('workspace_id',member.workspace_id).eq('account_external_id',aid).eq('campaign_external_id',cid).eq('segment_type','ad_group').eq('segment_date',dt);if(error)throw error;
-    const sum={}; const nullableKeys=['average_cpc','average_cpm','ctr_percent','impression_share_percent','top_impression_share_percent','absolute_top_impression_share_percent','search_rank_lost_is_percent','search_rank_lost_top_is_percent','search_rank_lost_abs_top_is_percent','search_budget_lost_is_percent','search_budget_lost_top_is_percent','search_budget_lost_abs_top_is_percent','search_eligible_top_is_percent','search_eligible_abs_top_is_percent','search_exact_match_is_percent','search_click_share_percent','interaction_rate_percent','invalid_click_rate_percent','average_cost','engagement_rate','active_view_measurability','active_view_viewability'];
-    let totalImpr=0,totalClicks=0,totalCost=0; for(const x of rr||[]){const m=x.payload?.metrics||{};for(const [k,v] of Object.entries(metricCols(m))){if(v==null)continue;if(nullableKeys.includes(k))continue;sum[k]=(sum[k]||0)+num(v)} totalImpr+=num(m.impressions);totalClicks+=num(m.clicks);totalCost+=num(m.cost);}
-    // Preserve campaign-level non-additive shares from the special campaign-share row emitted by the importer.
-    const shareRow=(rr||[]).map(x=>x.payload).find(p=>!p?.ad_group && p?.metrics && (p.metrics.impression_share_percent!=null || p.metrics.search_click_share_percent!=null));
-    if(shareRow){for(const k of nullableKeys)if(shareRow.metrics?.[k]!=null)sum[k]=num(shareRow.metrics[k]);}
-    // Derived campaign-level rates from canonical totals where mathematically valid.
-    sum.ctr_percent=totalImpr?Number((totalClicks/totalImpr*100).toFixed(2)):0;
-    sum.average_cpc=totalClicks?Number((totalCost/totalClicks).toFixed(6)):null;
-    sum.average_cost=sum.average_cpc;
-    const payload={source:'power_scale_normalized',segment:'daily_campaign',date:dt,derived_from:'ad_group',rows:(rr||[]).length};
-    const {error:me}=await admin.from('google_ads_daily_metrics').upsert({workspace_id:member.workspace_id,account_id:accountId,campaign_id:campaignId,metric_date:dt,...sum,payload,updated_at:new Date().toISOString()},{onConflict:'campaign_id,metric_date'});if(me)throw me;
+  // Métrica diária canônica: uma linha campaign_level por campanha/data, enviada diretamente pelo Google Ads.
+  // Reconsultamos o RAW após o upsert para manter idempotência mesmo quando o importador envia batches de 500 linhas.
+  for(const {campaignId,dt,accountId,aid,cid} of affected.values()){
+    const {data:rr,error}=await admin.from('google_ads_import_rows').select('payload,imported_at')
+      .eq('workspace_id',member.workspace_id).eq('account_external_id',aid).eq('campaign_external_id',cid)
+      .eq('segment_type','campaign_level').eq('segment_date',dt).order('imported_at',{ascending:false}).limit(1); if(error)throw error;
+    const source=rr?.[0]?.payload; if(!source)continue;
+    const m=metricCols(source.metrics||{});
+    const payload={...source,normalized_by:'power_scale_v10',derived_from:'campaign_level'};
+    const {error:me}=await admin.from('google_ads_daily_metrics').upsert({workspace_id:member.workspace_id,account_id:accountId,campaign_id:campaignId,metric_date:dt,...m,payload,updated_at:new Date().toISOString()},{onConflict:'campaign_id,metric_date'});if(me)throw me;
   }
   res.json({ok:true,received:rows.length,accounts:accounts.size,campaigns:campaigns.size,segments:segs.length,daily_rebuilt:affected.size});
 }catch(e){next(e)}});
