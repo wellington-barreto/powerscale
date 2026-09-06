@@ -1,0 +1,3 @@
+-- POWER SCALE v13.3
+-- Sem alteração estrutural obrigatória.
+-- A moeda e o timezone das contas serão preenchidos/corrigidos na próxima execução do Apps Script.

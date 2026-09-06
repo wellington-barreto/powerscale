@@ -1,0 +1,3 @@
+-- POWER SCALE v13.2
+-- Nenhuma alteração estrutural obrigatória.
+-- currency_code continua sendo preenchido pelo Apps Script a partir de customer.currency_code.

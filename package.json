@@ -1,6 +1,6 @@
 {
   "name": "power-scale",
-  "version": "0.13.1",
+  "version": "0.13.4",
   "private": true,
   "type": "module",
   "engines": {

@@ -6,6 +6,42 @@
 
 /* POWER SCALE — Importador Google Ads. Adaptado para o backend POWER SCALE. */
 const RUN_ERRORS = [];
+let POWER_SCALE_ACCOUNT_META = null;
+function getPowerScaleAccountMeta() {
+  if (POWER_SCALE_ACCOUNT_META) return POWER_SCALE_ACCOUNT_META;
+  try {
+    const a = AdsApp.currentAccount();
+    POWER_SCALE_ACCOUNT_META = {
+      'id': String(a.getCustomerId() || '').replace(/\D/g, ''),
+      'name': a.getName() || null,
+      'currency': a.getCurrencyCode() || null,
+      'timezone': a.getTimeZone() || null
+    };
+    Logger.log('[account] id=' + POWER_SCALE_ACCOUNT_META.id + ' currency=' + POWER_SCALE_ACCOUNT_META.currency + ' timezone=' + POWER_SCALE_ACCOUNT_META.timezone);
+  } catch (e) {
+    logErr('account_meta', e && e.message ? e.message : e);
+    POWER_SCALE_ACCOUNT_META = {'id': null, 'name': null, 'currency': null, 'timezone': null};
+  }
+  return POWER_SCALE_ACCOUNT_META;
+}
+function enrichAccountMeta(row) {
+  if (!row || typeof row !== 'object') return row;
+  const meta = getPowerScaleAccountMeta();
+  const current = row.account && typeof row.account === 'object' ? row.account : {};
+  const rowId = String(current.id || '').replace(/\D/g, '');
+  // Este importador roda em uma conta individual. Só injeta os metadados da conta atual
+  // quando o id está ausente ou corresponde à conta corrente.
+  if (!rowId || !meta.id || rowId === meta.id) {
+    row.account = {
+      ...current,
+      'id': rowId || meta.id || current.id || null,
+      'name': current.name || meta.name || null,
+      'currency': current.currency || current.currency_code || meta.currency || null,
+      'timezone': current.timezone || meta.timezone || null
+    };
+  }
+  return row;
+}
 function logErr(_0xaba994, _0x2690f6) {
   const _0x35b016 = String(_0x2690f6 == null ? "erro desconhecido" : _0x2690f6);
   Logger.log('[' + _0xaba994 + "] " + _0x35b016);
@@ -77,7 +113,7 @@ function prefetchCampaignInfo() {
     'hasDisplay': false,
     'hasDemandGen': false
   };
-  let _0x13b2e2 = null;
+  let _0x13b2e2 = getPowerScaleAccountMeta();
   try {
     const _0x1dc580 = AdsApp.search("\n      SELECT\n        customer.id, customer.descriptive_name, customer.currency_code,\n        campaign.id, campaign.name, campaign.status,\n        campaign.advertising_channel_type,\n        campaign_budget.amount_micros,\n        campaign.target_cpa.target_cpa_micros,\n        campaign.maximize_conversions.target_cpa_micros,\n        bidding_strategy.target_cpa.target_cpa_micros,\n        bidding_strategy.maximize_conversions.target_cpa_micros,\n        accessible_bidding_strategy.target_cpa.target_cpa_micros,\n        accessible_bidding_strategy.maximize_conversions.target_cpa_micros\n      FROM campaign\n    ");
     while (_0x1dc580.hasNext()) {
@@ -163,7 +199,8 @@ function flushCampaignRoster(_0x33fc01, _0x5f1971) {
       'account': {
         'id': String(_0x5f1971.id),
         'name': _0x5f1971.name || null,
-        'currency': _0x5f1971.currency || null
+        'currency': _0x5f1971.currency || null,
+        'timezone': _0x5f1971.timezone || null
       },
       'campaign': {
         'id': String(_0x20c2b8),
@@ -1265,6 +1302,7 @@ function sendInBatches(_0x5e3774, _0x59d569) {
   }
 }
 function sendToApi(_0xcd4b40) {
+  _0xcd4b40 = (_0xcd4b40 || []).map(enrichAccountMeta);
   const _0x1e8eb8 = {
     'Content-Type': "application/json"
   };

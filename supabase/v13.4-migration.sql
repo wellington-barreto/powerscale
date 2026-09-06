@@ -1,0 +1,3 @@
+-- POWER SCALE v13.4
+-- Sem alteração estrutural no banco de dados.
+-- A versão altera o carregamento de câmbio para browser-only e mantém a correção do importador Google Ads.

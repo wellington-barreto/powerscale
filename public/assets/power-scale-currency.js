@@ -10,28 +10,85 @@
   let ratePromise = null;
   let ratesLoadedAt = 0;
 
+  const CACHE_KEY = 'power_scale_fx_cache_v2';
+  const FX_BOOT_PAIRS = ['USD-BRL','EUR-BRL','GBP-BRL','USD-EUR','GBP-EUR','GBP-USD'];
+  let fxStatus = {provider:'AwesomeAPI',error:null,diagnostics:[]};
   const readManual = () => { try { return JSON.parse(localStorage.getItem(MANUAL_KEY) || '{}') || {}; } catch { return {}; } };
   const saveManual = v => localStorage.setItem(MANUAL_KEY, JSON.stringify(v || {}));
+  const readCache = () => { try { const x=JSON.parse(localStorage.getItem(CACHE_KEY)||'{}'); return x&&typeof x==='object'?x:{}; } catch { return {}; } };
+  const saveCache = rates => { try { localStorage.setItem(CACHE_KEY,JSON.stringify({saved_at:Date.now(),rates:rates||{}})); } catch {} };
   const fmt = (v, digits=4) => Number(v || 0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:digits});
-  const authToken = () => localStorage.getItem('sf_token') || '';
 
+  function normalizeRate(pair, rate, source, updatedAt){
+    const n=Number(rate);
+    if(!Number.isFinite(n)||n<=0)return null;
+    return {pair,rate:n,source,updated_at:updatedAt||null};
+  }
+  function expandAwesomeRows(json){
+    const out={};
+    for(const pair of FX_BOOT_PAIRS){
+      const [from,to]=pair.split('-');
+      const row=json?.[`${from}${to}`],bid=Number(row?.bid);
+      if(!Number.isFinite(bid)||bid<=0)continue;
+      const updated=row?.create_date||row?.timestamp||null;
+      out[pair]=normalizeRate(pair,bid,'awesomeapi-browser',updated);
+      out[`${to}-${from}`]=normalizeRate(`${to}-${from}`,1/bid,'awesomeapi-browser-inverse',updated);
+    }
+    for(const cur of SUPPORTED)out[`${cur}-${cur}`]=normalizeRate(`${cur}-${cur}`,1,'identity',null);
+    return out;
+  }
+  async function fetchAwesomeAtBoot(){
+    const url=`https://economia.awesomeapi.com.br/json/last/${FX_BOOT_PAIRS.join(',')}`;
+    const r=await originalFetch(url,{method:'GET',headers:{accept:'application/json'},cache:'no-store'});
+    if(!r.ok){const e=new Error(`AwesomeAPI HTTP ${r.status}`);e.status=r.status;throw e;}
+    const json=await r.json();
+    return expandAwesomeRows(json);
+  }
+  function liveRefresh(){
+    // Atualização suave: sem location.reload e sem nova consulta de câmbio.
+    // React Query refaz apenas as consultas de dados da aplicação para reaplicar a moeda selecionada.
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new CustomEvent('power-scale:currency-change',{detail:{mode,rates:apiRates,manual:readManual(),status:fxStatus}}));
+  }
   async function refreshRates(force=false){
-    if(mode==='ORIGINAL') return {};
-    if(!force && ratesLoadedAt && Date.now()-ratesLoadedAt<10*60*1000 && Object.keys(apiRates).length) return apiRates;
-    if(ratePromise && !force) return ratePromise;
+    // As cotações são carregadas uma vez pelo navegador no boot e ficam em memória.
+    // Trocar Original/USD/BRL/EUR/GBP NÃO chama novamente a AwesomeAPI.
+    if(!force && Object.keys(apiRates).length)return apiRates;
+    if(ratePromise)return ratePromise;
     ratePromise=(async()=>{
+      fxStatus={provider:'AwesomeAPI/browser',error:null,diagnostics:[]};
+      const cached=readCache();
       try{
-        const sources=SUPPORTED.filter(x=>x!==mode).join(',');
-        const r=await originalFetch(`/api/v1/workspace/exchange-rates?target=${encodeURIComponent(mode)}&sources=${encodeURIComponent(sources)}`,{headers:{Authorization:`Bearer ${authToken()}`,Accept:'application/json'}});
-        if(!r.ok) throw new Error('FX '+r.status);
-        const j=await r.json(); apiRates=j?.data?.rates||{}; ratesLoadedAt=Date.now(); return apiRates;
-      }catch(e){ console.warn('[POWER SCALE] câmbio indisponível',e); return apiRates; }
-      finally{ratePromise=null;renderPanel();}
+        const next=await fetchAwesomeAtBoot();
+        if(Object.keys(next).length){
+          apiRates=next;
+          ratesLoadedAt=Date.now();
+          saveCache(next);
+          fxStatus.diagnostics.push({attempt:'browser-boot',status:200,pairs:FX_BOOT_PAIRS.slice()});
+        }
+      }catch(e){
+        const msg=String(e?.message||e);
+        fxStatus.error=msg;
+        fxStatus.diagnostics.push({attempt:'browser-boot',status:e?.status||0,error:msg,pairs:FX_BOOT_PAIRS.slice()});
+        // Se a consulta atual falhar, reaproveita apenas o último snapshot salvo no navegador.
+        const fallback=cached?.rates&&typeof cached.rates==='object'?cached.rates:{};
+        if(Object.keys(fallback).length){
+          apiRates=fallback;
+          ratesLoadedAt=Number(cached.saved_at||0)||Date.now();
+          fxStatus.diagnostics.push({attempt:'browser-cache',status:200,saved_at:cached.saved_at||null});
+        }
+        console.warn('[POWER SCALE] cotações indisponíveis no carregamento',e);
+      }finally{
+        ratePromise=null;
+        renderPanel();
+      }
+      return apiRates;
     })();
     return ratePromise;
   }
   function rateFor(from,to){
-    from=String(from||'BRL').toUpperCase();to=String(to||mode).toUpperCase();if(from===to)return 1;
+    from=String(from||'').toUpperCase();to=String(to||mode).toUpperCase();if(!from)return null;if(from===to)return 1;
     const key=`${from}-${to}`,manual=readManual();const mv=Number(manual[key]);if(Number.isFinite(mv)&&mv>0)return mv;
     const av=Number(apiRates[key]?.rate);return Number.isFinite(av)&&av>0?av:null;
   }
@@ -42,7 +99,7 @@
 
   function transformAccounts(j){
     const list=Array.isArray(j?.data)?j.data:[];
-    for(const acc of list){const from=String(acc.currency_code||'BRL').toUpperCase();if(from===mode){acc.currency_code=mode;continue;}for(const c of acc.campaigns||[]){convertObjectMoney(c,from,mode);for(const k of Object.keys(c)){if(k.startsWith('snapshots_sum_')&&/cost|value/i.test(k))c[k]=cv(c[k],from,mode);}}acc.currency_code=mode;}
+    for(const acc of list){const from=String(acc.currency_code||'').toUpperCase();if(from===mode){acc.currency_code=mode;continue;}for(const c of acc.campaigns||[]){convertObjectMoney(c,from,mode);for(const k of Object.keys(c)){if(k.startsWith('snapshots_sum_')&&/cost|value/i.test(k))c[k]=cv(c[k],from,mode);}}acc.currency_code=mode;}
     return j;
   }
   function transformTrackers(j){
@@ -55,11 +112,11 @@
       for(const d of t.daily_metrics||[]){if(d.by_currency){let costN=0,valN=0;for(const [cur,b] of Object.entries(d.by_currency)){costN+=cv(b.cost,cur,mode);valN+=cv(b.conversion_value,cur,mode);}d.cost=costN;d.conversion_value=valN;d.profit=valN-costN;d.by_currency={[mode]:{cost:costN,conversion_value:valN,profit:valN-costN}};}}
     }return j;
   }
-  function transformReport(j){const d=j?.data,from=String(d?.campaign?.currency_code||'BRL').toUpperCase();if(!d||from===mode)return j;convertObjectMoney(d.campaign,from,mode);d.campaign.currency_code=mode;convertObjectMoney(d.totals,from,mode);for(const r of d.rows||[])convertObjectMoney(r,from,mode);return j;}
-  function transformFunnel(j){const d=j?.data;if(!d)return j;const from=String(d.currency_code||d.campaign?.currency_code||'BRL').toUpperCase();if(from===mode)return j;convertObjectMoney(d.funnel,from,mode);if(d.cards)for(const c of Object.values(d.cards))if(c&&typeof c==='object'&&'value'in c)c.value=cv(c.value,from,mode);for(const r of d.charts?.timeline_daily||[])convertObjectMoney(r,from,mode);d.currency_code=mode;return j;}
+  function transformReport(j){const d=j?.data,from=String(d?.campaign?.currency_code||'').toUpperCase();if(!d||from===mode)return j;convertObjectMoney(d.campaign,from,mode);d.campaign.currency_code=mode;convertObjectMoney(d.totals,from,mode);for(const r of d.rows||[])convertObjectMoney(r,from,mode);return j;}
+  function transformFunnel(j){const d=j?.data;if(!d)return j;const from=String(d.currency_code||d.campaign?.currency_code||'').toUpperCase();if(from===mode)return j;convertObjectMoney(d.funnel,from,mode);if(d.cards)for(const c of Object.values(d.cards))if(c&&typeof c==='object'&&'value'in c)c.value=cv(c.value,from,mode);for(const r of d.charts?.timeline_daily||[])convertObjectMoney(r,from,mode);d.currency_code=mode;return j;}
   function transformDashboard(j){
     const d=j?.data;if(!d)return j;
-    for(const key of ['purchase_by_currency','refund_by_currency']){const arr=d.cards?.[key];if(Array.isArray(arr)){const amount=arr.reduce((s,x)=>s+cv(x.amount,x.currency||'BRL',mode),0);d.cards[key]=[{currency:mode,amount}];}}
+    for(const key of ['purchase_by_currency','refund_by_currency']){const arr=d.cards?.[key];if(Array.isArray(arr)){const amount=arr.reduce((s,x)=>s+cv(x.amount,x.currency||'',mode),0);d.cards[key]=[{currency:mode,amount}];}}
     // Newer dashboard derives its money from /google-ads/accounts. Keep this for older dashboard endpoints.
     return j;
   }
@@ -72,7 +129,7 @@
     else if(p.includes('/workspace/trackers'))j=transformTrackers(j);
     else if(p.includes('/workspace/google-ads/report-daily'))j=transformReport(j);
     else if(p.includes('/workspace/google-ads/metrics/funnel'))j=transformFunnel(j);
-    else if(p.includes('/workspace/dashboard/charts/sales')){const arr=j?.charts?.sales_daily_by_currency||j?.data;if(Array.isArray(arr)){const out=[];for(const row of arr){const from=String(row.currency||'BRL').toUpperCase();const nr={...row,currency:mode};for(const k of ['amount','revenue','cost'])nr[k]=cv(row[k],from,mode);out.push(nr);}if(j.charts?.sales_daily_by_currency)j.charts.sales_daily_by_currency=out;if(Array.isArray(j.data))j.data=out;}}
+    else if(p.includes('/workspace/dashboard/charts/sales')){const arr=j?.charts?.sales_daily_by_currency||j?.data;if(Array.isArray(arr)){const out=[];for(const row of arr){const from=String(row.currency||'').toUpperCase();const nr={...row,currency:mode};for(const k of ['amount','revenue','cost'])nr[k]=cv(row[k],from,mode);out.push(nr);}if(j.charts?.sales_daily_by_currency)j.charts.sales_daily_by_currency=out;if(Array.isArray(j.data))j.data=out;}}
     else if(/\/workspace\/dashboard(?:\?|$)/.test(p))j=transformDashboard(j);
     else return resp;
     const h=new Headers(resp.headers);h.delete('content-length');return new Response(JSON.stringify(j),{status:resp.status,statusText:resp.statusText,headers:h});
@@ -92,13 +149,13 @@
     const wrap=document.getElementById('ps-fx-wrap');if(!wrap)return;const btn=wrap.querySelector('.ps-fx-btn'),pop=wrap.querySelector('.ps-fx-pop');btn.querySelector('.ps-fx-label').textContent=mode==='ORIGINAL'?'Original':mode;
     pop.querySelectorAll('.ps-fx-mode').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));
     const rates=pop.querySelector('.ps-fx-rates');if(mode==='ORIGINAL'){rates.innerHTML='<div class="ps-fx-note">Modo original: cada conta mantém a moeda cadastrada no Google Ads. Valores de moedas diferentes não são convertidos nem somados.</div>';return;}
-    const manual=readManual();rates.innerHTML=SUPPORTED.filter(s=>s!==mode).map(src=>{const key=`${src}-${mode}`,api=apiRates[key]?.rate,man=manual[key]??'';return `<div class="ps-fx-rate"><div class="ps-fx-pair">${src} → ${mode}${man!==''?'<span class="ps-fx-manual">Manual</span>':''}</div><div class="ps-fx-api">API hoje<b>${api?fmt(api,6):'—'}</b></div><input class="ps-fx-input" inputmode="decimal" data-pair="${key}" placeholder="${api?fmt(api,6):'Taxa'}" value="${man}"></div>`}).join('')+'<div class="ps-fx-note">Campo vazio = usa a AwesomeAPI. A taxa personalizada afeta somente a exibição; os valores originais permanecem no Supabase.</div>';
-    rates.querySelectorAll('.ps-fx-input').forEach(inp=>{inp.addEventListener('change',()=>{const m=readManual(),raw=inp.value.trim().replace(',','.');if(!raw)delete m[inp.dataset.pair];else{const n=Number(raw);if(Number.isFinite(n)&&n>0)m[inp.dataset.pair]=n;}saveManual(m);renderPanel();location.reload();});});
+    const manual=readManual();rates.innerHTML=SUPPORTED.filter(s=>s!==mode).map(src=>{const key=`${src}-${mode}`,api=apiRates[key]?.rate,man=manual[key]??'';return `<div class="ps-fx-rate"><div class="ps-fx-pair">${src} → ${mode}${man!==''?'<span class="ps-fx-manual">Manual</span>':''}</div><div class="ps-fx-api">API hoje<b>${api?fmt(api,6):'—'}</b></div><input class="ps-fx-input" inputmode="decimal" data-pair="${key}" placeholder="${api?fmt(api,6):'Taxa'}" value="${man}"></div>`}).join('')+'<div class="ps-fx-note">Campo vazio = usa a taxa carregada da AwesomeAPI no navegador. A cotação fica em memória durante a sessão; a taxa personalizada afeta somente a exibição.</div>';
+    rates.querySelectorAll('.ps-fx-input').forEach(inp=>{let timer=null;inp.addEventListener('input',()=>{const m=readManual(),raw=inp.value.trim().replace(',','.');if(!raw)delete m[inp.dataset.pair];else{const n=Number(raw);if(Number.isFinite(n)&&n>0)m[inp.dataset.pair]=n;}saveManual(m);clearTimeout(timer);timer=setTimeout(()=>liveRefresh(),180);});});
   }
   function mount(){
     css();if(document.getElementById('ps-fx-wrap'))return true;const header=document.querySelector('header');if(!header)return false;const right=[...header.querySelectorAll('div')].find(d=>d.className&&String(d.className).includes('flex items-center gap-2')&&d.querySelector('button'));if(!right)return false;
     const wrap=document.createElement('div');wrap.id='ps-fx-wrap';wrap.innerHTML=`<button class="ps-fx-btn" type="button" title="Moeda de exibição"><span class="ps-fx-dot"></span><span class="ps-fx-label"></span><span style="font-size:10px;opacity:.7">⌄</span></button><div class="ps-fx-pop"><div class="ps-fx-title">Moeda de exibição</div><div class="ps-fx-modes">${['ORIGINAL',...SUPPORTED].map(m=>`<button type="button" class="ps-fx-mode" data-mode="${m}">${m==='ORIGINAL'?'Orig.':m}</button>`).join('')}</div><div class="ps-fx-rates"></div></div>`;
-    right.insertBefore(wrap,right.firstChild);const btn=wrap.querySelector('.ps-fx-btn'),pop=wrap.querySelector('.ps-fx-pop');btn.addEventListener('click',e=>{e.stopPropagation();pop.classList.toggle('open');btn.classList.toggle('open',pop.classList.contains('open'));if(pop.classList.contains('open'))refreshRates(true)});document.addEventListener('click',e=>{if(!wrap.contains(e.target)){pop.classList.remove('open');btn.classList.remove('open')}});wrap.querySelectorAll('.ps-fx-mode').forEach(b=>b.addEventListener('click',()=>{const next=b.dataset.mode;if(next===mode)return;mode=next;localStorage.setItem(MODE_KEY,mode);renderPanel();if(mode!=='ORIGINAL')refreshRates(true).finally(()=>location.reload());else location.reload();}));renderPanel();if(mode!=='ORIGINAL')refreshRates();return true;
+    right.insertBefore(wrap,right.firstChild);const btn=wrap.querySelector('.ps-fx-btn'),pop=wrap.querySelector('.ps-fx-pop');btn.addEventListener('click',e=>{e.stopPropagation();pop.classList.toggle('open');btn.classList.toggle('open',pop.classList.contains('open'));});document.addEventListener('click',e=>{if(!wrap.contains(e.target)){pop.classList.remove('open');btn.classList.remove('open')}});wrap.querySelectorAll('.ps-fx-mode').forEach(b=>b.addEventListener('click',()=>{const next=b.dataset.mode;if(next===mode)return;mode=next;localStorage.setItem(MODE_KEY,mode);renderPanel();liveRefresh();}));renderPanel();refreshRates().then(()=>{renderPanel();if(mode!=='ORIGINAL')liveRefresh();});return true;
   }
   const obs=new MutationObserver(()=>mount()&&obs.disconnect());if(!mount())obs.observe(document.documentElement,{childList:true,subtree:true});
 })();
