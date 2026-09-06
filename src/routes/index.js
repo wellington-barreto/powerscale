@@ -226,7 +226,26 @@ A.post('/product-identification-rules/apply',async(req,res,next)=>{try{
   } res.json({data:{processed:campaigns.length,linked,created,skipped,details}});
 }catch(e){next(e)}});
 
-A.get('/trackers',async(req,res,next)=>{try{let q=admin.from('trackers').select('*,platform:platforms(*)',{count:'exact'}).eq('workspace_id',req.workspaceId).is('archived_at',null);if(req.query.q)q=q.ilike('name',`%${req.query.q}%`);const {data,error,count}=await q.order('id',{ascending:false});if(error)throw error;res.json({data:{data,total:count??data.length}})}catch(e){next(e)}});
+A.get('/trackers',async(req,res,next)=>{try{
+  const page=Math.max(1,Number(req.query.page||1)||1),perPage=Math.min(500,Math.max(1,Number(req.query.per_page||100)||100));
+  const fromDate=req.query.from?String(req.query.from).slice(0,10):null,toDate=req.query.to?String(req.query.to).slice(0,10):null;
+  let q=admin.from('trackers').select('*,platform:platforms(*)',{count:'exact'}).eq('workspace_id',req.workspaceId);
+  if(String(req.query.include_archived||'')!=='1')q=q.is('archived_at',null); if(req.query.q)q=q.ilike('name',`%${req.query.q}%`);
+  const offset=(page-1)*perPage; const {data:trackers,error,count}=await q.order('id',{ascending:false}).range(offset,offset+perPage-1); if(error)throw error;
+  const trackerIds=(trackers||[]).map(t=>t.id); let campaigns=[];
+  if(trackerIds.length) campaigns=await one(admin.from('google_ads_campaigns').select('id,tracker_id,account_id').eq('workspace_id',req.workspaceId).in('tracker_id',trackerIds));
+  const campaignIds=campaigns.map(c=>c.id),accountIds=[...new Set(campaigns.map(c=>c.account_id).filter(Boolean))];
+  const accounts=accountIds.length?await one(admin.from('google_ads_accounts').select('id,currency_code').in('id',accountIds)):[];
+  const accountCurrency=new Map(accounts.map(a=>[a.id,String(a.currency_code||'BRL').toUpperCase()]));
+  const campaignMap=new Map(campaigns.map(c=>[c.id,c])); let metrics=[];
+  if(campaignIds.length){let mq=admin.from('google_ads_daily_metrics').select('campaign_id,metric_date,cost,conversions,conversion_value,checkout_conversions,checkout_value').eq('workspace_id',req.workspaceId).in('campaign_id',campaignIds);if(fromDate)mq=mq.gte('metric_date',fromDate);if(toDate)mq=mq.lte('metric_date',toDate);metrics=await one(mq.order('metric_date',{ascending:true}));}
+  const stats=new Map();
+  for(const t of trackers||[])stats.set(t.id,{campaigns_count:0,total_cost:0,total_conversion_value:0,total_conversions:0,total_checkouts:0,total_cost_by_currency:{},total_conversion_value_by_currency:{},daily:new Map()});
+  for(const c of campaigns){const st=stats.get(c.tracker_id);if(st)st.campaigns_count++;}
+  for(const m of metrics){const c=campaignMap.get(m.campaign_id);if(!c)continue;const st=stats.get(c.tracker_id);if(!st)continue;const cur=accountCurrency.get(c.account_id)||'BRL',cost=Number(m.cost||0),value=Number(m.conversion_value||0),conv=Number(m.conversions||0),checkouts=Number(m.checkout_conversions||0);st.total_cost+=cost;st.total_conversion_value+=value;st.total_conversions+=conv;st.total_checkouts+=checkouts;st.total_cost_by_currency[cur]=(st.total_cost_by_currency[cur]||0)+cost;st.total_conversion_value_by_currency[cur]=(st.total_conversion_value_by_currency[cur]||0)+value;const day=st.daily.get(m.metric_date)||{date:m.metric_date,cost:0,conversion_value:0,conversions:0,profit:0,by_currency:{}};day.cost+=cost;day.conversion_value+=value;day.conversions+=conv;day.profit+=value-cost;const b=day.by_currency[cur]||(day.by_currency[cur]={cost:0,conversion_value:0,profit:0});b.cost+=cost;b.conversion_value+=value;b.profit+=value-cost;st.daily.set(m.metric_date,day);}
+  const data=(trackers||[]).map(t=>{const st=stats.get(t.id);return {...t,campaigns_count:st.campaigns_count,total_cost:st.total_cost,total_conversion_value:st.total_conversion_value,total_profit:st.total_conversion_value-st.total_cost,total_conversions:st.total_conversions,total_checkouts:st.total_checkouts,total_cost_by_currency:st.total_cost_by_currency,total_conversion_value_by_currency:st.total_conversion_value_by_currency,daily_metrics:[...st.daily.values()]};});
+  const total=count??data.length,last_page=Math.max(1,Math.ceil(total/perPage));res.json({data:{data,total,current_page:page,last_page,per_page:perPage}})
+}catch(e){next(e)}});
 A.post('/trackers',create('trackers')); A.put('/trackers/:id',update('trackers'));
 A.delete('/trackers/:id',async(req,res,next)=>{try{await one(admin.from('trackers').update({archived_at:new Date().toISOString()}).eq('id',req.params.id).eq('workspace_id',req.workspaceId));res.json({success:true})}catch(e){next(e)}});
 A.get('/trackers/archived',async(req,res,next)=>{try{const data=await one(admin.from('trackers').select('*,platform:platforms(*)').eq('workspace_id',req.workspaceId).not('archived_at','is',null));res.json({data})}catch(e){next(e)}});
@@ -356,6 +375,15 @@ A.post('/dashboard',async(req,res,next)=>{try{
   res.json({data:{cards:{purchase_by_currency:purchase,refund_by_currency:[],visitors:{value:visitors,trend:'flat',change_pct:0},checkouts:{value:checkouts,trend:'flat',change_pct:0},organic_sales:{value:0,trend:'flat',change_pct:0}},top_countries_sales:[],totals:{revenue,investment:cost,cost,conversions,checkouts,impressions,clicks,profit,roi},revenue,investment:cost,cost,conversions,profit,roi,top_campaigns:top.slice(0,10),worst_campaigns:[...top].sort((a,b)=>(a.conversion_value-a.cost)-(b.conversion_value-b.cost)).slice(0,10)}});
 }catch(e){next(e)}});
 A.post('/dashboard/charts/sales',async(req,res,next)=>{try{const {rows,campaigns,accounts}=await dashboardMetrics(req);const amap=new Map(accounts.map(a=>[a.id,a])),cmap=new Map(campaigns.map(c=>[c.id,c])),m=new Map();for(const r of rows){const cur=amap.get(cmap.get(r.campaign_id)?.account_id)?.currency_code||'BRL',key=`${r.metric_date}|${cur}`,x=m.get(key)||{date:r.metric_date,currency:cur,amount:0,revenue:0,cost:0};x.amount+=Number(r.conversion_value||0);x.revenue+=Number(r.conversion_value||0);x.cost+=Number(r.cost||0);m.set(key,x);}res.json({charts:{sales_daily_by_currency:[...m.values()]},data:[...m.values()]})}catch(e){next(e)}});
+const fxCache=new Map();
+async function fetchFxPair(from,to){
+  from=String(from||'').toUpperCase();to=String(to||'').toUpperCase();if(!from||!to)return null;if(from===to)return {pair:`${from}-${to}`,rate:1,source:'identity',updated_at:new Date().toISOString()};
+  const key=`${from}-${to}`,cached=fxCache.get(key);if(cached&&Date.now()-cached.ts<10*60*1000)return cached.value;
+  const read=async(a,b)=>{const pair=`${a}-${b}`,r=await fetch(`https://economia.awesomeapi.com.br/json/last/${pair}`,{headers:{accept:'application/json'}});if(!r.ok)return null;const j=await r.json();const row=j[`${a}${b}`];const bid=Number(row?.bid);return Number.isFinite(bid)&&bid>0?{pair,rate:bid,source:'awesomeapi',updated_at:row?.create_date||row?.timestamp||new Date().toISOString()}:null;};
+  let value=await read(from,to);if(!value){const inverse=await read(to,from);if(inverse)value={pair:key,rate:1/inverse.rate,source:'awesomeapi-inverse',updated_at:inverse.updated_at};}
+  if(value)fxCache.set(key,{ts:Date.now(),value});return value;
+}
+A.get('/exchange-rates',async(req,res,next)=>{try{const target=String(req.query.target||'BRL').toUpperCase();const sources=String(req.query.sources||'USD,BRL,EUR,GBP').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean);const rates={};for(const source of [...new Set(sources)]){const x=await fetchFxPair(source,target);if(x)rates[`${source}-${target}`]=x;}res.json({data:{target,rates,provider:'AwesomeAPI'}})}catch(e){next(e)}});
 A.get('/plan-usage',async(req,res)=>res.json({plan:'development',limits:{},usage:{}}));
 router.use('/workspace',A);
 

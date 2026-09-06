@@ -1,3 +1,5 @@
+> Versão atual: **v13.1**. Veja `V13.1-CHANGELOG.md`.
+
 ## POWER SCALE v12
 
 Correção da resposta de métricas diárias para o formato esperado pelo frontend (`data.campaign`, `data.totals`, `data.rows`). Não requer migration de banco.

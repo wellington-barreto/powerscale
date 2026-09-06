@@ -24,7 +24,7 @@ app.get('/health', (_req, res) => {
     ok: true,
     name: 'POWER SCALE',
     runtime: process.env.VERCEL ? 'vercel-node' : 'node',
-    version: '0.8.0'
+    version: '0.13.1'
   });
 });
 
