@@ -62,7 +62,11 @@ router.get('/google-ads/appscript/config/:uuid',async(req,res,next)=>{try{
   const first=!count;
   const firstDays=Math.max(1,Math.min(3650,Number(process.env.APPSCRIPT_FIRST_IMPORT_DAYS||730)||730));
   const incrementalDays=Math.max(1,Math.min(365,Number(process.env.APPSCRIPT_INCREMENTAL_DAYS||7)||7));
-  res.json({days_back:first?firstDays:incrementalDays,is_first_import:first,customer_id:customerId,first_import_days:firstDays,incremental_days:incrementalDays});
+  const {data:syncSettings,error:settingsError}=await admin.from('google_ads_appscript_settings').select('*').eq('workspace_id',member.workspace_id).maybeSingle(); if(settingsError)throw settingsError;
+  const forceFull=!!syncSettings?.force_full_import;
+  const fullDays=Math.max(1,Math.min(3650,Number(syncSettings?.full_import_days||firstDays)||firstDays));
+  const daysBack=forceFull?fullDays:(first?firstDays:incrementalDays);
+  res.json({days_back:daysBack,is_first_import:first,force_full_import:forceFull,sync_mode:forceFull?'forced_full':(first?'first_import':'incremental'),customer_id:customerId,first_import_days:firstDays,incremental_days:incrementalDays,full_import_days:fullDays});
 }catch(e){next(e)}});
 router.post('/google-ads/appscript/log/:uuid',async(req,res,next)=>{try{
   const member=await workspaceForUserUuid(req.params.uuid); if(!member)return res.status(404).json({message:'Instalação não encontrada'});
@@ -171,8 +175,30 @@ router.post('/google-ads/import/:uuid',async(req,res,next)=>{try{
   res.json({ok:true,received:rows.length,accounts:accounts.size,campaigns:campaigns.size,segments:segs.length,daily_rebuilt:affected.size});
 }catch(e){next(e)}});
 
+// MCC callback: desativa a carga histórica somente quando todas as contas selecionadas concluírem sem erro.
+router.post('/google-ads/appscript/mcc-complete/:uuid',async(req,res,next)=>{try{
+  const member=await workspaceForUserUuid(req.params.uuid); if(!member)return res.status(404).json({message:'Instalação não encontrada'});
+  const total=Math.max(0,Number(req.body?.total_accounts)||0),selected=Math.max(0,Number(req.body?.selected_accounts)||0),ok=Math.max(0,Number(req.body?.ok)||0),errors=Math.max(0,Number(req.body?.errors)||0);
+  const completed=selected>0 && total===selected && errors===0 && ok===selected;
+  const patch={workspace_id:member.workspace_id,last_mcc_total:total,last_mcc_selected:selected,last_mcc_ok:ok,last_mcc_errors:errors,updated_at:new Date().toISOString()};
+  if(completed){patch.force_full_import=false;patch.last_full_completed_at=new Date().toISOString();}
+  const {data,error}=await admin.from('google_ads_appscript_settings').upsert(patch,{onConflict:'workspace_id'}).select().single(); if(error)throw error;
+  res.json({ok:true,full_import_auto_disabled:completed,settings:data});
+}catch(e){next(e)}});
+
 router.use(auth);
 router.get('/user',async(req,res,next)=>{try{const p=await one(admin.from('profiles').select('*').eq('user_id',req.user.id).maybeSingle());res.json({id:req.user.id,uuid:req.user.id,email:req.user.email,name:p?.name||req.user.email,role:p?.role||req.workspaceRole||'user',preferences:p?.preferences||{}})}catch(e){next(e)}});
+router.get('/workspace/google-ads/appscript-settings',async(req,res,next)=>{try{
+  const {data,error}=await admin.from('google_ads_appscript_settings').select('*').eq('workspace_id',req.workspaceId).maybeSingle(); if(error)throw error;
+  res.json({data:data||{workspace_id:req.workspaceId,force_full_import:false,full_import_days:730}});
+}catch(e){next(e)}});
+router.patch('/workspace/google-ads/appscript-settings',async(req,res,next)=>{try{
+  const force=!!req.body?.force_full_import; const days=Math.max(1,Math.min(3650,Number(req.body?.full_import_days||730)||730));
+  const patch={workspace_id:req.workspaceId,force_full_import:force,full_import_days:days,updated_at:new Date().toISOString()};
+  if(force)patch.last_full_requested_at=new Date().toISOString();
+  const {data,error}=await admin.from('google_ads_appscript_settings').upsert(patch,{onConflict:'workspace_id'}).select().single(); if(error)throw error;
+  res.json({data});
+}catch(e){next(e)}});
 router.put('/profile',async(req,res,next)=>{try{const data=await one(admin.from('profiles').upsert({user_id:req.user.id,...merge(req.body,['user_id','role'])}).select().single());res.json(data)}catch(e){next(e)}});
 router.put('/profile/preferences',async(req,res,next)=>{try{const data=await one(admin.from('profiles').upsert({user_id:req.user.id,preferences:req.body.preferences||{}}).select().single());res.json(data)}catch(e){next(e)}});
 router.put('/profile/password',async(req,res,next)=>{try{const {error}=await admin.auth.admin.updateUserById(req.user.id,{password:req.body.password||req.body.new_password});if(error)throw error;res.json({success:true})}catch(e){next(e)}});
