@@ -219,11 +219,19 @@
     snapshots.set(id,{raw:clone(raw),url:String(url)});
     return id;
   }
+  function tagSnapshotPayload(value,id){
+    if(!value||typeof value!=='object')return value;
+    try{Object.defineProperty(value,'__psfx_snapshot_id',{value:id,enumerable:true,configurable:true,writable:true});}catch{}
+    if(value.data&&typeof value.data==='object'){
+      try{Object.defineProperty(value.data,'__psfx_snapshot_id',{value:id,enumerable:true,configurable:true,writable:true});}catch{}
+      if(Array.isArray(value.data)) for(const row of value.data){if(row&&typeof row==='object')try{Object.defineProperty(row,'__psfx_snapshot_id',{value:id,enumerable:true,configurable:true,writable:true});}catch{}}
+    }
+    return value;
+  }
   function projectSnapshot(id,target){
     const snap=snapshots.get(id);if(!snap)return null;
     const next=transformByUrl(clone(snap.raw),snap.url,target);
-    if(next&&typeof next==='object')Object.defineProperty(next,'__psfx_snapshot_id',{value:id,enumerable:true,configurable:true,writable:true});
-    return next;
+    return tagSnapshotPayload(next,id);
   }
   async function transformedResponse(resp,url){
     if(!resp.ok||!convertibleUrl(url))return resp;
@@ -243,16 +251,48 @@
     return transformedResponse(resp,url);
   };
 
+  function snapshotIdFromData(data){
+    if(!data||typeof data!=='object')return null;
+    if(data.__psfx_snapshot_id)return data.__psfx_snapshot_id;
+    if(Array.isArray(data))return data.find(x=>x&&typeof x==='object'&&x.__psfx_snapshot_id)?.__psfx_snapshot_id||null;
+    if(data.data&&typeof data.data==='object'&&data.data.__psfx_snapshot_id)return data.data.__psfx_snapshot_id;
+    if(Array.isArray(data.entries))return data.entries.find(x=>x&&typeof x==='object'&&x.__psfx_snapshot_id)?.__psfx_snapshot_id||null;
+    if(Array.isArray(data.rows))return data.rows.find(x=>x&&typeof x==='object'&&x.__psfx_snapshot_id)?.__psfx_snapshot_id||null;
+    return null;
+  }
+  function shapeProjection(current,full){
+    if(!full)return null;
+    // APIs do frontend original nem sempre guardam a resposta inteira no React Query:
+    // algumas retornam json.data. Mantemos exatamente o mesmo shape já usado pela query.
+    if(Array.isArray(current)){
+      if(Array.isArray(full?.data))return full.data;
+      if(Array.isArray(full))return full;
+    }
+    if(current&&typeof current==='object'&&!Array.isArray(current)){
+      if(current.__psfx_snapshot_id)return full;
+      if(full?.data&&typeof full.data==='object'){
+        if('entries' in current && 'entries' in full.data)return full.data;
+        if('rows' in current && 'rows' in full.data)return full.data;
+        if(!('data' in current))return full.data;
+      }
+    }
+    return full;
+  }
   function projectQueryCache(){
     const q=window.__POWER_SCALE_QUERY_CLIENT__;
     if(!q?.getQueryCache)return false;
     let changed=0;
     for(const query of q.getQueryCache().getAll()){
       const data=query?.state?.data;
-      const id=data&&typeof data==='object'?data.__psfx_snapshot_id:null;
-      if(!id||!snapshots.has(id))continue;
-      const next=projectSnapshot(id,mode);if(!next)continue;
-      q.setQueryData(query.queryKey,next);changed++;
+      const id=snapshotIdFromData(data);
+      if(id&&snapshots.has(id)){
+        const full=projectSnapshot(id,mode),next=shapeProjection(data,full);
+        if(next!=null){q.setQueryData(query.queryKey,next);changed++;continue;}
+      }
+      // Algumas telas só consultam o modo global para formatar a moeda e não carregam
+      // um payload conversível. Forçamos apenas um novo render local, sem refetch.
+      if(Array.isArray(data)){q.setQueryData(query.queryKey,data.slice());changed++;}
+      else if(data&&typeof data==='object'){q.setQueryData(query.queryKey,{...data});changed++;}
     }
     return changed>0;
   }
@@ -260,7 +300,11 @@
     // v13.9: operação estritamente local. Não dispara focus/online, não invalida
     // React Query e não chama nenhum endpoint.
     projectQueryCache();
-    window.dispatchEvent(new CustomEvent('power-scale:currency-local',{detail:{mode}}));
+    const detail={mode};
+    window.dispatchEvent(new CustomEvent('power-scale:currency-local',{detail}));
+    // Compatibilidade com o bundle original/POWER SCALE: este evento apenas reprojeta
+    // o cache em memória; não invalida queries e não dispara chamadas de rede.
+    window.dispatchEvent(new CustomEvent('power-scale:currency-change',{detail}));
   }
   window.__POWER_SCALE_APPLY_CURRENCY__=projectQueryCache;
 
