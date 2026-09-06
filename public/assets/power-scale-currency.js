@@ -6,6 +6,20 @@
   let mode = (localStorage.getItem(MODE_KEY) || 'ORIGINAL').toUpperCase();
   if (mode !== 'ORIGINAL' && !SUPPORTED.includes(mode)) mode = 'ORIGINAL';
 
+
+  // Compatibilidade global com componentes do bundle original que ainda passam
+  // currency:"BRL"/"USD" diretamente ao Intl.NumberFormat. A quantidade já é
+  // convertida no cache; aqui alteramos somente o rótulo/símbolo de exibição.
+  const NativeNumberFormat = Intl.NumberFormat;
+  Intl.NumberFormat = function(locales, options){
+    let next=options;
+    if(options&&options.style==='currency'&&mode!=='ORIGINAL')next={...options,currency:mode};
+    return new NativeNumberFormat(locales,next);
+  };
+  Intl.NumberFormat.prototype=NativeNumberFormat.prototype;
+  Intl.NumberFormat.supportedLocalesOf=NativeNumberFormat.supportedLocalesOf.bind(NativeNumberFormat);
+  try{Object.setPrototypeOf(Intl.NumberFormat,NativeNumberFormat);}catch{}
+
   const CACHE_KEY = 'power_scale_fx_cache_v2';
   const FX_BOOT_PAIRS = ['USD-BRL','EUR-BRL','GBP-BRL','USD-EUR','GBP-EUR','GBP-USD'];
   let apiRates = {};
@@ -199,6 +213,19 @@
     for(const row of rows){let total=0;row.months=row.months||{};row.by_currency=row.by_currency||{};for(let month=1;month<=12;month++){const buckets=financeMonthBuckets(row,month);let converted=0;for(const [cur,val] of Object.entries(buckets))converted+=cv(val,cur,target);total+=converted;if(target==='BRL'){row.months[month]=converted;row.by_currency[month]={};}else{row.months[month]=0;row.by_currency[month]=converted?{[target]:converted}:{};}}row.total=total;}
     return j;
   }
+
+  function transformFinancialDashboard(j,target){
+    const d=j?.data;if(!d||target==='ORIGINAL')return j;
+    const convertBuckets=b=>Object.entries(b||{}).reduce((sum,[cur,val])=>sum+cv(val,cur,target),0);
+    if(d.by_currency){
+      d.revenue=convertBuckets(d.by_currency.revenue);d.expenses=convertBuckets(d.by_currency.expenses);d.profit=d.revenue-d.expenses;
+    }
+    for(const row of d.chart||[]){if(row.by_currency){row.receitas=convertBuckets(row.by_currency.receitas);row.despesas=convertBuckets(row.by_currency.despesas);}}
+    for(const row of d.chart_affiliate||[]){if(row.by_currency){row.receitas=convertBuckets(row.by_currency.receitas);row.despesas=convertBuckets(row.by_currency.despesas);}}
+    for(const row of d.chart_affiliate_daily||[]){if(row.by_currency){row.receitas=convertBuckets(row.by_currency.receitas);row.despesas=convertBuckets(row.by_currency.despesas);}}
+    if(Array.isArray(d.entries))for(const e of d.entries){const from=String(e.currency||'BRL').toUpperCase();e.value=cv(e.value,from,target);e.amount=cv(e.amount,from,target);e.currency=target;}
+    d.currency=target;return j;
+  }
   function transformByUrl(j,url,target){
     const p=String(url);
     if(p.includes('/workspace/google-ads/accounts'))return transformAccounts(j,target);
@@ -209,22 +236,32 @@
     if(p.includes('/workspace/financial/entries'))return transformFinancialEntries(j,target);
     if(p.includes('/workspace/financial/mining'))return transformFinancialMining(j,target);
     if(p.includes('/workspace/financial/company'))return transformFinancialCompany(j,target);
+    if(p.includes('/workspace/financial/dashboard'))return transformFinancialDashboard(j,target);
     if(/\/workspace\/dashboard(?:\?|$)/.test(p))return transformDashboard(j,target);
     return j;
   }
-  const convertibleUrl=url=>['/workspace/google-ads/accounts','/workspace/trackers','/workspace/google-ads/report-daily','/workspace/google-ads/metrics/funnel','/workspace/dashboard','/workspace/financial/entries','/workspace/financial/mining','/workspace/financial/company'].some(p=>String(url).includes(p));
+  const convertibleUrl=url=>['/workspace/google-ads/accounts','/workspace/trackers','/workspace/google-ads/report-daily','/workspace/google-ads/metrics/funnel','/workspace/dashboard','/workspace/financial/entries','/workspace/financial/mining','/workspace/financial/company','/workspace/financial/dashboard'].some(p=>String(url).includes(p));
 
   function rememberSnapshot(raw,url){
     const id='fx'+(++snapshotSeq);
     snapshots.set(id,{raw:clone(raw),url:String(url)});
     return id;
   }
+  function defineTag(value,id,shape){
+    if(!value||typeof value!=='object')return;
+    try{Object.defineProperty(value,'__psfx_snapshot_id',{value:id,enumerable:true,configurable:true,writable:true});}catch{}
+    try{Object.defineProperty(value,'__psfx_shape',{value:shape,enumerable:true,configurable:true,writable:true});}catch{}
+  }
   function tagSnapshotPayload(value,id){
     if(!value||typeof value!=='object')return value;
-    try{Object.defineProperty(value,'__psfx_snapshot_id',{value:id,enumerable:true,configurable:true,writable:true});}catch{}
+    defineTag(value,id,'root');
     if(value.data&&typeof value.data==='object'){
-      try{Object.defineProperty(value.data,'__psfx_snapshot_id',{value:id,enumerable:true,configurable:true,writable:true});}catch{}
-      if(Array.isArray(value.data)) for(const row of value.data){if(row&&typeof row==='object')try{Object.defineProperty(row,'__psfx_snapshot_id',{value:id,enumerable:true,configurable:true,writable:true});}catch{}}
+      defineTag(value.data,id,'data');
+      if(value.data.data&&typeof value.data.data==='object')defineTag(value.data.data,id,'data.data');
+      if(Array.isArray(value.data))for(const row of value.data)defineTag(row,id,'data');
+      if(Array.isArray(value.data.entries))for(const row of value.data.entries)defineTag(row,id,'data.entries');
+      if(Array.isArray(value.data.rows))for(const row of value.data.rows)defineTag(row,id,'data.rows');
+      if(Array.isArray(value.data.data))for(const row of value.data.data)defineTag(row,id,'data.data');
     }
     return value;
   }
@@ -232,6 +269,14 @@
     const snap=snapshots.get(id);if(!snap)return null;
     const next=transformByUrl(clone(snap.raw),snap.url,target);
     return tagSnapshotPayload(next,id);
+  }
+  function projectedShape(full,shape){
+    if(!full)return null;
+    if(shape==='data')return full.data;
+    if(shape==='data.data')return full?.data?.data;
+    if(shape==='data.entries')return full?.data?.entries;
+    if(shape==='data.rows')return full?.data?.rows;
+    return full;
   }
   async function transformedResponse(resp,url){
     if(!resp.ok||!convertibleUrl(url))return resp;
@@ -251,32 +296,19 @@
     return transformedResponse(resp,url);
   };
 
-  function snapshotIdFromData(data){
+  function snapshotMetaFromData(data){
     if(!data||typeof data!=='object')return null;
-    if(data.__psfx_snapshot_id)return data.__psfx_snapshot_id;
-    if(Array.isArray(data))return data.find(x=>x&&typeof x==='object'&&x.__psfx_snapshot_id)?.__psfx_snapshot_id||null;
-    if(data.data&&typeof data.data==='object'&&data.data.__psfx_snapshot_id)return data.data.__psfx_snapshot_id;
-    if(Array.isArray(data.entries))return data.entries.find(x=>x&&typeof x==='object'&&x.__psfx_snapshot_id)?.__psfx_snapshot_id||null;
-    if(Array.isArray(data.rows))return data.rows.find(x=>x&&typeof x==='object'&&x.__psfx_snapshot_id)?.__psfx_snapshot_id||null;
+    if(data.__psfx_snapshot_id)return{id:data.__psfx_snapshot_id,shape:data.__psfx_shape||'root'};
+    if(Array.isArray(data)){
+      const x=data.find(x=>x&&typeof x==='object'&&x.__psfx_snapshot_id);
+      return x?{id:x.__psfx_snapshot_id,shape:x.__psfx_shape||'data'}:null;
+    }
+    for(const key of ['entries','rows','data']){
+      const v=data[key];
+      if(v&&typeof v==='object'&&v.__psfx_snapshot_id)return{id:v.__psfx_snapshot_id,shape:v.__psfx_shape||('data.'+key)};
+      if(Array.isArray(v)){const x=v.find(x=>x&&typeof x==='object'&&x.__psfx_snapshot_id);if(x)return{id:x.__psfx_snapshot_id,shape:x.__psfx_shape||('data.'+key)};}
+    }
     return null;
-  }
-  function shapeProjection(current,full){
-    if(!full)return null;
-    // APIs do frontend original nem sempre guardam a resposta inteira no React Query:
-    // algumas retornam json.data. Mantemos exatamente o mesmo shape já usado pela query.
-    if(Array.isArray(current)){
-      if(Array.isArray(full?.data))return full.data;
-      if(Array.isArray(full))return full;
-    }
-    if(current&&typeof current==='object'&&!Array.isArray(current)){
-      if(current.__psfx_snapshot_id)return full;
-      if(full?.data&&typeof full.data==='object'){
-        if('entries' in current && 'entries' in full.data)return full.data;
-        if('rows' in current && 'rows' in full.data)return full.data;
-        if(!('data' in current))return full.data;
-      }
-    }
-    return full;
   }
   function projectQueryCache(){
     const q=window.__POWER_SCALE_QUERY_CLIENT__;
@@ -284,9 +316,9 @@
     let changed=0;
     for(const query of q.getQueryCache().getAll()){
       const data=query?.state?.data;
-      const id=snapshotIdFromData(data);
-      if(id&&snapshots.has(id)){
-        const full=projectSnapshot(id,mode),next=shapeProjection(data,full);
+      const meta=snapshotMetaFromData(data);
+      if(meta&&snapshots.has(meta.id)){
+        const full=projectSnapshot(meta.id,mode),next=projectedShape(full,meta.shape);
         if(next!=null){q.setQueryData(query.queryKey,next);changed++;continue;}
       }
       // Algumas telas só consultam o modo global para formatar a moeda e não carregam

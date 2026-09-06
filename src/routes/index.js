@@ -230,34 +230,49 @@ A.post('/platforms/:id',platformUpload.single('logo'),async(req,res,next)=>{try{
 }catch(e){next(e)}});
 A.get('/user-platforms',list('user_platforms')); A.post('/user-platforms',create('user_platforms')); A.delete('/user-platforms/:id',remove('user_platforms'));
 function applyProductRule(name,rule){
-  const source=String(name||''); const ci=source.toLowerCase(); const pattern=String(rule.pattern||''); let extracted=null,matched=false;
+  const source=String(name||''), ci=source.toLowerCase(), pattern=String(rule.pattern||'');
+  const cfg=rule.payload&&typeof rule.payload==='object'?rule.payload:{};
+  const minChars=Number(cfg.min_chars||0)||0, maxChars=Number(cfg.max_chars||0)||0;
+  const candidateMode=String(cfg.candidate_mode||'first');
+  let extracted=null,matched=false,candidates=[];
+  const validLength=v=>{const n=String(v||'').trim().length;return(!minChars||n>=minChars)&&(!maxChars||n<=maxChars)};
   try{
     switch(rule.rule_type){
-      case 'bracket_position':{const parts=[...source.matchAll(/\[([^\]]+)\]/g)].map(m=>m[1].trim()); const pos=Math.max(1,Number(rule.position||1)); if(parts[pos-1]){matched=true;extracted=parts[pos-1];}break;}
+      case 'bracket_position':{
+        const parts=[...source.matchAll(/\[([^\]]+)\]/g)].map(m=>m[1].trim());
+        const pos=Number(rule.position||0);
+        if(pos>0){const v=parts[pos-1];if(v&&validLength(v)){matched=true;extracted=v;candidates=[v];}}
+        else{
+          candidates=parts.filter(validLength);
+          if(candidates.length){matched=true;extracted=candidateMode==='last'?candidates[candidates.length-1]:candidates[0];}
+        }
+        break;
+      }
       case 'contains': matched=ci.includes(pattern.toLowerCase()); break;
       case 'starts_with': matched=ci.startsWith(pattern.toLowerCase()); break;
       case 'ends_with': matched=ci.endsWith(pattern.toLowerCase()); break;
-      case 'regex':{const rx=new RegExp(pattern,rule.case_sensitive?'':'i');const m=source.match(rx);if(m){matched=true;extracted=m[1]||m[0];}break;}
+      case 'regex':{const rx=new RegExp(pattern,rule.case_sensitive?'':'i');const m=source.match(rx);if(m){matched=true;extracted=m[1]||m[0];candidates=[extracted];}break;}
     }
   }catch{return null;}
   if(!matched)return null;
   let result=rule.result_mode==='fixed'?String(rule.result_value||'').trim():(extracted||String(rule.result_value||'').trim()||source);
-  if(rule.trim_result!==false)result=result.trim(); if(rule.result_case==='upper')result=result.toUpperCase(); else if(rule.result_case==='lower')result=result.toLowerCase(); else if(rule.result_case==='title')result=result.toLowerCase().replace(/(^|\s|[-_])\S/g,m=>m.toUpperCase());
-  return result||null;
+  if(rule.trim_result!==false)result=result.trim();
+  if(rule.result_case==='upper')result=result.toUpperCase(); else if(rule.result_case==='lower')result=result.toLowerCase(); else if(rule.result_case==='title')result=result.toLowerCase().replace(/(^|\s|[-_])\S/g,m=>m.toUpperCase());
+  return result?{product:result,candidates}:null;
 }
 async function rulesForWorkspace(workspaceId){return await one(admin.from('product_identification_rules').select('*').eq('workspace_id',workspaceId).eq('active',true).order('priority',{ascending:true}).order('id',{ascending:true}));}
-async function identifyProduct(workspaceId,name){const rules=await rulesForWorkspace(workspaceId);for(const r of rules){const product=applyProductRule(name,r);if(product)return{product,rule:r};}return{product:null,rule:null};}
+async function identifyProduct(workspaceId,name,ruleId=null){const rules=await rulesForWorkspace(workspaceId);const selected=ruleId?rules.filter(r=>Number(r.id)===Number(ruleId)):rules;for(const r of selected){const hit=applyProductRule(name,r);if(hit)return{product:hit.product,candidates:hit.candidates||[],rule:r};}return{product:null,candidates:[],rule:ruleId?(rules.find(r=>Number(r.id)===Number(ruleId))||null):null};}
 A.get('/product-identification-rules',async(req,res,next)=>{try{const data=await one(admin.from('product_identification_rules').select('*').eq('workspace_id',req.workspaceId).order('priority').order('id'));res.json({data})}catch(e){next(e)}});
 A.post('/product-identification-rules',async(req,res,next)=>{try{const b=req.body||{};const row={workspace_id:req.workspaceId,name:b.name||'Nova regra',priority:Number(b.priority||100),rule_type:b.rule_type||'contains',pattern:b.pattern||'',position:b.position?Number(b.position):null,result_mode:b.result_mode||'extract',result_value:b.result_value||null,result_case:b.result_case||'title',case_sensitive:!!b.case_sensitive,trim_result:b.trim_result!==false,action:b.action||'suggest',active:b.active!==false,payload:b.payload||{}};const data=await one(admin.from('product_identification_rules').insert(row).select().single());res.json({data})}catch(e){next(e)}});
 A.put('/product-identification-rules/:id',async(req,res,next)=>{try{const b=merge(req.body||{},['id','workspace_id','created_at']);b.updated_at=new Date().toISOString();const data=await one(admin.from('product_identification_rules').update(b).eq('workspace_id',req.workspaceId).eq('id',req.params.id).select().single());res.json({data})}catch(e){next(e)}});
 A.delete('/product-identification-rules/:id',remove('product_identification_rules'));
-A.post('/product-identification-rules/test',async(req,res,next)=>{try{const out=await identifyProduct(req.workspaceId,req.body?.campaign_name||'');res.json({data:{campaign_name:req.body?.campaign_name||'',product:out.product,rule:out.rule}})}catch(e){next(e)}});
-A.get('/product-identification-rules/suggestions',async(req,res,next)=>{try{const campaigns=await one(admin.from('google_ads_campaigns').select('id,name,external_id,account_id,tracker_id').eq('workspace_id',req.workspaceId).is('tracker_id',null).order('id'));const data=[];for(const c of campaigns){const out=await identifyProduct(req.workspaceId,c.name);data.push({...c,suggested_product:out.product,matched_rule:out.rule?{id:out.rule.id,name:out.rule.name,action:out.rule.action}:null});}res.json({data})}catch(e){next(e)}});
+A.post('/product-identification-rules/test',async(req,res,next)=>{try{const out=await identifyProduct(req.workspaceId,req.body?.campaign_name||'',req.body?.rule_id||null);res.json({data:{campaign_name:req.body?.campaign_name||'',product:out.product,candidates:out.candidates,rule:out.rule}})}catch(e){next(e)}});
+A.get('/product-identification-rules/suggestions',async(req,res,next)=>{try{const campaigns=await one(admin.from('google_ads_campaigns').select('id,name,external_id,account_id,tracker_id').eq('workspace_id',req.workspaceId).is('tracker_id',null).order('id'));const rules=await rulesForWorkspace(req.workspaceId);const data=[];for(const c of campaigns){const selectedRuleId=ruleChoices[String(c.id)]||ruleChoices[c.id]||null;const out=await identifyProduct(req.workspaceId,c.name,selectedRuleId);const rule_options=rules.map(r=>{const hit=applyProductRule(c.name,r);return{id:r.id,name:r.name,action:r.action,product:hit?.product||null,candidates:hit?.candidates||[]}});data.push({...c,suggested_product:out.product,matched_rule:out.rule?{id:out.rule.id,name:out.rule.name,action:out.rule.action}:null,rule_options});}res.json({data})}catch(e){next(e)}});
 A.post('/product-identification-rules/apply',async(req,res,next)=>{try{
-  const ids=Array.isArray(req.body?.campaign_ids)?req.body.campaign_ids.map(Number).filter(Boolean):null; let q=admin.from('google_ads_campaigns').select('*').eq('workspace_id',req.workspaceId).is('tracker_id',null); if(ids?.length)q=q.in('id',ids); const campaigns=await one(q); let linked=0,created=0,skipped=0; const details=[];
-  for(const c of campaigns){const out=await identifyProduct(req.workspaceId,c.name);if(!out.product){skipped++;details.push({campaign_id:c.id,status:'no_match'});continue;} const action=req.body?.force_action||out.rule?.action||'suggest'; if(action==='suggest'){skipped++;details.push({campaign_id:c.id,status:'suggested',product:out.product});continue;}
+  const ids=Array.isArray(req.body?.campaign_ids)?req.body.campaign_ids.map(Number).filter(Boolean):null; const ruleChoices=req.body?.rule_choices&&typeof req.body.rule_choices==='object'?req.body.rule_choices:{}; let q=admin.from('google_ads_campaigns').select('*').eq('workspace_id',req.workspaceId).is('tracker_id',null); if(ids?.length)q=q.in('id',ids); const campaigns=await one(q); let linked=0,created=0,skipped=0; const details=[];
+  for(const c of campaigns){const selectedRuleId=ruleChoices[String(c.id)]||ruleChoices[c.id]||null;const out=await identifyProduct(req.workspaceId,c.name,selectedRuleId);if(!out.product){skipped++;details.push({campaign_id:c.id,status:'no_match'});continue;} const action=req.body?.force_action||out.rule?.action||'suggest'; if(action==='suggest'){skipped++;details.push({campaign_id:c.id,status:'suggested',product:out.product});continue;}
     let tracker=await one(admin.from('trackers').select('id,name').eq('workspace_id',req.workspaceId).ilike('name',out.product).limit(1).maybeSingle()); if(!tracker){tracker=await one(admin.from('trackers').insert({workspace_id:req.workspaceId,name:out.product,mining_status:'em_teste',payload:{created_by:'product_rule',rule_id:out.rule?.id||null}}).select('id,name').single());created++;}
-    if(action==='create_link'||action==='link'){await one(admin.from('google_ads_campaigns').update({tracker_id:tracker.id,updated_at:new Date().toISOString()}).eq('workspace_id',req.workspaceId).eq('id',c.id));linked++;details.push({campaign_id:c.id,status:'linked',product:tracker.name,tracker_id:tracker.id});}else details.push({campaign_id:c.id,status:'created',product:tracker.name,tracker_id:tracker.id});
+    if(action==='create_link'||action==='link'){await one(admin.from('google_ads_campaigns').update({tracker_id:tracker.id,payload:{...(c.payload||{}),product_rule_id:out.rule?.id||null,product_rule_name:out.rule?.name||null,product_rule_source:selectedRuleId?'manual':'suggested'},updated_at:new Date().toISOString()}).eq('workspace_id',req.workspaceId).eq('id',c.id));linked++;details.push({campaign_id:c.id,status:'linked',product:tracker.name,tracker_id:tracker.id});}else details.push({campaign_id:c.id,status:'created',product:tracker.name,tracker_id:tracker.id});
   } res.json({data:{processed:campaigns.length,linked,created,skipped,details}});
 }catch(e){next(e)}});
 
@@ -418,10 +433,19 @@ A.get('/financial/viability',async(req,res,next)=>{try{const s=await one(admin.f
 A.get('/financial/dashboard',async(req,res,next)=>{try{
   const year=Number(req.query.year||new Date().getFullYear()),month=req.query.month?Number(req.query.month):null;
   let eq=admin.from('financial_entries').select('*').eq('workspace_id',req.workspaceId).gte('entry_date',`${year}-01-01`).lte('entry_date',`${year}-12-31`);const entries=await one(eq);
-  const campaigns=await one(admin.from('google_ads_campaigns').select('id').eq('workspace_id',req.workspaceId)),ids=campaigns.map(c=>c.id);let metrics=[];if(ids.length){let mq=admin.from('google_ads_daily_metrics').select('metric_date,cost,conversion_value').eq('workspace_id',req.workspaceId).in('campaign_id',ids).gte('metric_date',`${year}-01-01`).lte('metric_date',`${year}-12-31`);metrics=await one(mq)}
-  const monthly=Array.from({length:12},(_,i)=>({month:i+1,receitas:0,despesas:0}));for(const m of metrics){const x=monthly[Number(String(m.metric_date).slice(5,7))-1];x.receitas+=Number(m.conversion_value||0);x.despesas+=Number(m.cost||0)}for(const e of entries){const x=monthly[Number(String(e.entry_date).slice(5,7))-1],v=Number(e.amount||0);if(e.type==='income')x.receitas+=v;else x.despesas+=v}
-  const daily=[];if(month){const dm=new Map();for(const m of metrics.filter(x=>Number(String(x.metric_date).slice(5,7))===month)){const d=Number(String(m.metric_date).slice(8,10)),x=dm.get(d)||{day:d,receitas:0,despesas:0};x.receitas+=Number(m.conversion_value||0);x.despesas+=Number(m.cost||0);dm.set(d,x)}for(const e of entries.filter(x=>Number(String(x.entry_date).slice(5,7))===month)){const d=Number(String(e.entry_date).slice(8,10)),x=dm.get(d)||{day:d,receitas:0,despesas:0};if(e.type==='income')x.receitas+=Number(e.amount||0);else x.despesas+=Number(e.amount||0);dm.set(d,x)}daily.push(...[...dm.values()].sort((a,b)=>a.day-b.day))}
-  const revenue=monthly.reduce((s,x)=>s+x.receitas,0),expenses=monthly.reduce((s,x)=>s+x.despesas,0);res.json({data:{year,month,revenue,expenses,profit:revenue-expenses,chart:monthly,chart_affiliate:monthly,chart_affiliate_daily:daily,entries:(entries||[]).map(entryOut)}})
+  const campaigns=await one(admin.from('google_ads_campaigns').select('id,account_id').eq('workspace_id',req.workspaceId)),ids=campaigns.map(c=>c.id);
+  const accountIds=[...new Set(campaigns.map(c=>c.account_id).filter(Boolean))],accounts=accountIds.length?await one(admin.from('google_ads_accounts').select('id,currency_code,payload').in('id',accountIds)):[];
+  const cmap=new Map(campaigns.map(c=>[c.id,c])),amap=new Map(accounts.map(a=>[a.id,normalizedCurrency(a)||'BRL']));
+  let metrics=[];if(ids.length){let mq=admin.from('google_ads_daily_metrics').select('campaign_id,metric_date,cost,conversion_value').eq('workspace_id',req.workspaceId).in('campaign_id',ids).gte('metric_date',`${year}-01-01`).lte('metric_date',`${year}-12-31`);metrics=await one(mq)}
+  const bucket=()=>({receitas:{},despesas:{}}),add=(map,cur,v)=>{cur=String(cur||'BRL').toUpperCase();map[cur]=(map[cur]||0)+Number(v||0)};
+  const monthly=Array.from({length:12},(_,i)=>({month:i+1,receitas:0,despesas:0,by_currency:bucket()}));
+  for(const m of metrics){const x=monthly[Number(String(m.metric_date).slice(5,7))-1],cur=amap.get(cmap.get(m.campaign_id)?.account_id)||'BRL';add(x.by_currency.receitas,cur,m.conversion_value);add(x.by_currency.despesas,cur,m.cost);}
+  for(const e of entries){const x=monthly[Number(String(e.entry_date).slice(5,7))-1],cur=e.currency||'BRL',v=Number(e.amount||0);add(e.type==='income'?x.by_currency.receitas:x.by_currency.despesas,cur,v)}
+  // Campos legados permanecem BRL; demais moedas ficam nos buckets para o seletor global.
+  for(const x of monthly){x.receitas=Number(x.by_currency.receitas.BRL||0);x.despesas=Number(x.by_currency.despesas.BRL||0)}
+  const daily=[];if(month){const dm=new Map(),get=d=>{const x=dm.get(d)||{day:d,receitas:0,despesas:0,by_currency:bucket()};dm.set(d,x);return x};for(const m of metrics.filter(x=>Number(String(x.metric_date).slice(5,7))===month)){const x=get(Number(String(m.metric_date).slice(8,10))),cur=amap.get(cmap.get(m.campaign_id)?.account_id)||'BRL';add(x.by_currency.receitas,cur,m.conversion_value);add(x.by_currency.despesas,cur,m.cost)}for(const e of entries.filter(x=>Number(String(x.entry_date).slice(5,7))===month)){const x=get(Number(String(e.entry_date).slice(8,10))),cur=e.currency||'BRL';add(e.type==='income'?x.by_currency.receitas:x.by_currency.despesas,cur,e.amount)}for(const x of [...dm.values()].sort((a,b)=>a.day-b.day)){x.receitas=Number(x.by_currency.receitas.BRL||0);x.despesas=Number(x.by_currency.despesas.BRL||0);daily.push(x)}}
+  const totals={revenue:{},expenses:{}};for(const x of monthly){for(const [c,v] of Object.entries(x.by_currency.receitas))add(totals.revenue,c,v);for(const [c,v] of Object.entries(x.by_currency.despesas))add(totals.expenses,c,v)}
+  const revenue=Number(totals.revenue.BRL||0),expenses=Number(totals.expenses.BRL||0);res.json({data:{year,month,revenue,expenses,profit:revenue-expenses,by_currency:totals,chart:monthly,chart_affiliate:monthly,chart_affiliate_daily:daily,entries:(entries||[]).map(entryOut)}})
 }catch(e){next(e)}});
 async function dashboardMetrics(req){
   const from=String(req.body?.from||'1900-01-01'),to=String(req.body?.to||'2999-12-31'),trackerId=req.body?.tracker_id?Number(req.body.tracker_id):null;
