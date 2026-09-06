@@ -93,6 +93,26 @@
     const r=rateFor(from,to); return r==null?n:n*r;
   }
 
+  let contextCurrency='BRL';
+  function displayCurrency(sourceCurrency=null){
+    if(mode!=='ORIGINAL')return mode;
+    const cur=String(sourceCurrency||contextCurrency||'BRL').toUpperCase();
+    return SUPPORTED.includes(cur)?cur:'BRL';
+  }
+  function formatMoney(value,sourceCurrency=null,options={}){
+    const currency=displayCurrency(sourceCurrency),n=Number(value||0);
+    try{return new Intl.NumberFormat('pt-BR',{style:'currency',currency,...options}).format(n);}
+    catch{return new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL',...options}).format(n);}
+  }
+  function currencySymbol(sourceCurrency=null){
+    const cur=displayCurrency(sourceCurrency);
+    return cur==='BRL'?'R$':cur==='USD'?'US$':cur==='EUR'?'€':cur==='GBP'?'£':cur;
+  }
+  window.__POWER_SCALE_FORMAT_MONEY__=formatMoney;
+  window.__POWER_SCALE_CURRENCY_SYMBOL__=currencySymbol;
+  window.__POWER_SCALE_SET_CONTEXT_CURRENCY__=cur=>{const c=String(cur||'').toUpperCase();if(SUPPORTED.includes(c))contextCurrency=c;};
+  window.__POWER_SCALE_CURRENCY_MODE__=()=>mode;
+
   const moneyFields = new Set(['cost','conversion_value','checkout_value','all_conversion_value','average_cpc','average_cpm','average_cost','budget','budget_daily','target_cpa','refund','organic_sales','profit','cost_per_conv','snapshots_sum_cost','snapshots_sum_conversion_value','snapshots_sum_checkout_value','snapshots_sum_all_conversion_value','snapshots_sum_refund','snapshots_sum_organic_sales','total_cost','total_conversion_value','total_profit','revenue','investment','amount']);
   function convertObjectMoney(obj,from,to){
     if(!obj||typeof obj!=='object')return obj;
@@ -102,8 +122,9 @@
   function mapToTarget(map,to){let total=0;for(const [cur,val] of Object.entries(map||{})) total+=cv(val,cur,to);return {[to]:total};}
 
   function transformAccounts(j,target){
+    const originalList=Array.isArray(j?.data)?j.data:[];const originalCurrencies=[...new Set(originalList.map(a=>String(a.currency_code||'').toUpperCase()).filter(c=>SUPPORTED.includes(c)))];if(originalCurrencies.length===1)contextCurrency=originalCurrencies[0];
     if(target==='ORIGINAL')return j;
-    const list=Array.isArray(j?.data)?j.data:[];
+    const list=originalList;
     for(const acc of list){
       const from=String(acc.currency_code||'').toUpperCase();
       if(!from)continue;
@@ -128,8 +149,9 @@
     return j;
   }
   function transformReport(j,target){
+    const d=j?.data,from=String(d?.campaign?.currency_code||'').toUpperCase();if(d&&SUPPORTED.includes(from))contextCurrency=from;
     if(target==='ORIGINAL')return j;
-    const d=j?.data,from=String(d?.campaign?.currency_code||'').toUpperCase();if(!d||!from)return j;
+    if(!d||!from)return j;
     if(from!==target){convertObjectMoney(d.campaign,from,target);convertObjectMoney(d.totals,from,target);for(const r of d.rows||[])convertObjectMoney(r,from,target);}
     d.campaign.currency_code=target;return j;
   }
@@ -153,6 +175,30 @@
     const out=[];for(const row of arr){const from=String(row.currency||'').toUpperCase();const nr={...row,currency:target};for(const k of ['amount','revenue','cost'])nr[k]=cv(row[k],from,target);out.push(nr);}
     if(j.charts?.sales_daily_by_currency)j.charts.sales_daily_by_currency=out;if(Array.isArray(j.data))j.data=out;return j;
   }
+
+  function transformFinancialEntries(j,target){
+    const entries=Array.isArray(j?.data?.entries)?j.data.entries:null;if(!entries)return j;
+    if(target==='ORIGINAL')return j;
+    for(const e of entries){const from=String(e.currency||'BRL').toUpperCase();e.value=cv(e.value,from,target);e.amount=cv(e.amount,from,target);e.currency=target;}
+    return j;
+  }
+  function transformFinancialMining(j,target){
+    const rows=Array.isArray(j?.data)?j.data:null;if(!rows)return j;
+    if(target==='ORIGINAL')return j;
+    for(const row of rows){const from=String(row.currency||'USD').toUpperCase();for(const k of ['comissao_media','cpc_maior','cpc_medio','cpc_ideal'])if(row[k]!=null&&row[k]!==''&&!Number.isNaN(Number(row[k])))row[k]=cv(row[k],from,target);row.currency=target;}
+    return j;
+  }
+  function financeMonthBuckets(row,month){
+    const out={};const legacy=Number(row?.months?.[month]||0);if(legacy)out.BRL=(out.BRL||0)+legacy;
+    for(const [cur,val] of Object.entries(row?.by_currency?.[month]||{})){const n=Number(val||0);if(n)out[String(cur).toUpperCase()]=(out[String(cur).toUpperCase()]||0)+n;}
+    return out;
+  }
+  function transformFinancialCompany(j,target){
+    const rows=Array.isArray(j?.data?.rows)?j.data.rows:null;if(!rows)return j;
+    if(target==='ORIGINAL')return j;
+    for(const row of rows){let total=0;row.months=row.months||{};row.by_currency=row.by_currency||{};for(let month=1;month<=12;month++){const buckets=financeMonthBuckets(row,month);let converted=0;for(const [cur,val] of Object.entries(buckets))converted+=cv(val,cur,target);total+=converted;if(target==='BRL'){row.months[month]=converted;row.by_currency[month]={};}else{row.months[month]=0;row.by_currency[month]=converted?{[target]:converted}:{};}}row.total=total;}
+    return j;
+  }
   function transformByUrl(j,url,target){
     const p=String(url);
     if(p.includes('/workspace/google-ads/accounts'))return transformAccounts(j,target);
@@ -160,10 +206,13 @@
     if(p.includes('/workspace/google-ads/report-daily'))return transformReport(j,target);
     if(p.includes('/workspace/google-ads/metrics/funnel'))return transformFunnel(j,target);
     if(p.includes('/workspace/dashboard/charts/sales'))return transformSalesChart(j,target);
+    if(p.includes('/workspace/financial/entries'))return transformFinancialEntries(j,target);
+    if(p.includes('/workspace/financial/mining'))return transformFinancialMining(j,target);
+    if(p.includes('/workspace/financial/company'))return transformFinancialCompany(j,target);
     if(/\/workspace\/dashboard(?:\?|$)/.test(p))return transformDashboard(j,target);
     return j;
   }
-  const convertibleUrl=url=>['/workspace/google-ads/accounts','/workspace/trackers','/workspace/google-ads/report-daily','/workspace/google-ads/metrics/funnel','/workspace/dashboard'].some(p=>String(url).includes(p));
+  const convertibleUrl=url=>['/workspace/google-ads/accounts','/workspace/trackers','/workspace/google-ads/report-daily','/workspace/google-ads/metrics/funnel','/workspace/dashboard','/workspace/financial/entries','/workspace/financial/mining','/workspace/financial/company'].some(p=>String(url).includes(p));
 
   function rememberSnapshot(raw,url){
     const id='fx'+(++snapshotSeq);

@@ -389,9 +389,12 @@ A.get('/financial/company',async(req,res,next)=>{try{
   const cmap=new Map(campaigns.map(c=>[c.id,c])),amap=new Map(accounts.map(a=>[a.id,normalizedCurrency(a)]));
   const make=(id,name,type)=>({category_id:id,category_name:name,category_type:type,months:Object.fromEntries(Array.from({length:12},(_,i)=>[i+1,0])),by_currency:{},total:0,has_google_ads:false});
   const rows=(cats||[]).map(c=>make(c.id,c.name,c.type||'expense')),rmap=new Map(rows.map(r=>[r.category_id,r]));
-  for(const e of entries){const r=rmap.get(e.category_id);if(!r)continue;const m=Number(String(e.entry_date).slice(5,7)),v=Number(e.amount||0);r.months[m]+=v;r.total+=v;const cur=String(e.currency||'BRL').toUpperCase();r.by_currency[m]=r.by_currency[m]||{};r.by_currency[m][cur]=(r.by_currency[m][cur]||0)+v;}
+  // O frontend original trata `months` como o bucket legado BRL e `by_currency`
+  // como os demais buckets. Não duplique o mesmo valor nos dois campos.
+  const addFinanceValue=(r,month,value,currency)=>{const v=Number(value||0),cur=String(currency||'BRL').toUpperCase();if(!v)return;if(cur==='BRL'){r.months[month]+=v;r.total+=v;return;}r.by_currency[month]=r.by_currency[month]||{};r.by_currency[month][cur]=(r.by_currency[month][cur]||0)+v;};
+  for(const e of entries){const r=rmap.get(e.category_id);if(!r)continue;const m=Number(String(e.entry_date).slice(5,7));addFinanceValue(r,m,e.amount,e.currency||'BRL');}
   const revenue=make('__google_revenue','Receita Afiliado (Google Ads)','revenue'),cost=make('__google_cost','Investimento Google Ads','expense');revenue.has_google_ads=cost.has_google_ads=true;
-  for(const m of metrics){const mo=Number(String(m.metric_date).slice(5,7)),cur=amap.get(cmap.get(m.campaign_id)?.account_id)||'UNKNOWN',rv=Number(m.conversion_value||0),cv=Number(m.cost||0);for(const [r,v] of [[revenue,rv],[cost,cv]]){r.months[mo]+=v;r.total+=v;r.by_currency[mo]=r.by_currency[mo]||{};r.by_currency[mo][cur]=(r.by_currency[mo][cur]||0)+v}}
+  for(const m of metrics){const mo=Number(String(m.metric_date).slice(5,7)),cur=amap.get(cmap.get(m.campaign_id)?.account_id)||'BRL';addFinanceValue(revenue,mo,m.conversion_value,cur);addFinanceValue(cost,mo,m.cost,cur);}
   res.json({data:{year,rows:[revenue,cost,...rows]}})
 }catch(e){next(e)}});
 A.put('/financial/company',async(req,res,next)=>{try{
