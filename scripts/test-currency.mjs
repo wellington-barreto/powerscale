@@ -1,0 +1,26 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+const store=new Map();
+store.set('power_scale_fx_manual',JSON.stringify({'USD-BRL':5,'BRL-USD':0.2,'EUR-BRL':6,'BRL-EUR':1/6,'GBP-BRL':7,'BRL-GBP':1/7,'USD-EUR':0.9,'EUR-USD':1/0.9,'USD-GBP':0.8,'GBP-USD':1.25}));
+const localStorage={getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,String(v)),removeItem:k=>store.delete(k)};
+const noop=()=>{};
+const document={getElementById:()=>null,querySelector:()=>null,createElement:()=>({appendChild:noop,style:{},classList:{add:noop,remove:noop,toggle:noop},setAttribute:noop}),head:{appendChild:noop},documentElement:{}};
+class MutationObserver{constructor(cb){this.cb=cb}observe(){}disconnect(){}}
+const listeners=new Map();
+const window={localStorage,fetch:async()=>{throw new Error('network disabled')},addEventListener:(n,cb)=>{(listeners.get(n)||listeners.set(n,[]).get(n)).push(cb)},dispatchEvent:e=>{for(const cb of listeners.get(e.type)||[])cb(e)},__POWER_SCALE_QUERY_CLIENT__:null};
+const context={window,localStorage,document,MutationObserver,CustomEvent:class{constructor(type,o={}){this.type=type;this.detail=o.detail}},requestAnimationFrame:cb=>setTimeout(cb,0),setTimeout,clearTimeout,console,Intl,Headers,Response,URLSearchParams,structuredClone};
+context.globalThis=context;vm.createContext(context);
+vm.runInContext(fs.readFileSync(new URL('../public/assets/power-scale-currency.js',import.meta.url),'utf8'),context);
+const d=window.__POWER_SCALE_FX_DEBUG__;
+d.setMode('BRL');
+const close=(a,b,msg)=>{if(Math.abs(Number(a)-Number(b))>0.0001)throw new Error(`${msg}: got ${a}, expected ${b}`)};
+let x=d.transformByUrl({data:{data:[{total_cost:234.41,total_conversion_value:80,total_cost_by_currency:{USD:234.41},total_conversion_value_by_currency:{USD:80},daily_metrics:[{by_currency:{USD:{cost:10,conversion_value:20}}}]}]}},'/api/v1/workspace/trackers?x=1','BRL');
+close(x.data.data[0].total_cost,1172.05,'trackers total_cost');close(x.data.data[0].total_conversion_value,400,'trackers revenue');
+x=d.transformByUrl({data:[{currency_code:'USD',campaigns:[{snapshots_sum_cost:100,snapshots_sum_conversion_value:50,average_cpc:2,target_cpa:10,budget_daily:20,max_cpc_limit:3}]}]},'/api/v1/workspace/google-ads/accounts','BRL');
+close(x.data[0].campaigns[0].snapshots_sum_cost,500,'accounts cost');close(x.data[0].campaigns[0].average_cpc,10,'accounts avg cpc');close(x.data[0].campaigns[0].target_cpa,50,'accounts target cpa');
+x=d.transformByUrl({data:{entries:[{value:10,amount:10,currency:'USD'}]}},'/api/v1/workspace/financial/entries?year=2026','BRL');close(x.data.entries[0].value,50,'entries');
+x=d.transformByUrl({data:{rows:[{months:{1:100},by_currency:{1:{USD:10}},total:110}]}},'/api/v1/workspace/financial/company?year=2026','BRL');close(x.data.rows[0].months[1],150,'company month');
+x=d.transformByUrl({data:{device:[{clicks:10,impressions:100,cost:20,conversion_value:30,money_by_currency:{USD:{cost:20,conversion_value:30,checkout_value:0,all_conversion_value:0}}}]}},'/api/v1/workspace/google-ads/segments','BRL');close(x.data.device[0].cost,100,'segments cost');close(x.data.device[0].avg_cpc,10,'segments cpc');
+x=d.transformByUrl({data:{currency_code:'USD',funnel:{conversions:2},money_by_currency:{USD:{cost:20,conversion_value:50}},cards:{investment:{value:20},result:{value:2},conversion_value:{value:50},checkout_conversions:{value:3},cost_per_result:{value:10}},charts:{timeline_daily:[]}}},'/api/v1/workspace/google-ads/metrics/funnel','BRL');close(x.data.cards.investment.value,100,'funnel investment');close(x.data.cards.result.value,2,'funnel result count');close(x.data.cards.checkout_conversions.value,3,'funnel checkout count');close(x.data.cards.cost_per_result.value,50,'funnel cpr');
+x=d.transformByUrl({data:{totals_by_currency:{USD:{revenue:80,cost:20}},totals:{revenue:80,cost:20,investment:20,profit:60},top_campaigns:[{currency_code:'USD',cost:20,conversion_value:80,profit:60}],worst_campaigns:[]}},'/api/v1/workspace/dashboard','BRL');close(x.data.totals.revenue,400,'dashboard revenue');close(x.data.totals.cost,100,'dashboard cost');close(x.data.top_campaigns[0].cost,100,'dashboard top cost');
+console.log('currency transform tests: OK');

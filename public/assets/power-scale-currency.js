@@ -31,7 +31,12 @@
   // A troca de moeda reprojeta esse snapshot local; nunca refaz fetch e nunca converte
   // em cima de um valor já convertido.
   const snapshots = new Map();
+  const responseCache = new Map();
   let snapshotSeq = 0;
+  let replayDepth = 0;
+  let replayPromise = null;
+  const inReplay=()=>replayDepth>0;
+  const withLocalReplay=async fn=>{replayDepth++;try{return await fn();}finally{replayDepth=Math.max(0,replayDepth-1);}};
 
   const readManual = () => { try { return JSON.parse(localStorage.getItem(MANUAL_KEY) || '{}') || {}; } catch { return {}; } };
   const saveManual = v => localStorage.setItem(MANUAL_KEY, JSON.stringify(v || {}));
@@ -127,7 +132,7 @@
   window.__POWER_SCALE_SET_CONTEXT_CURRENCY__=cur=>{const c=String(cur||'').toUpperCase();if(SUPPORTED.includes(c))contextCurrency=c;};
   window.__POWER_SCALE_CURRENCY_MODE__=()=>mode;
 
-  const moneyFields = new Set(['cost','conversion_value','checkout_value','all_conversion_value','average_cpc','average_cpm','average_cost','budget','budget_daily','target_cpa','refund','organic_sales','profit','cost_per_conv','snapshots_sum_cost','snapshots_sum_conversion_value','snapshots_sum_checkout_value','snapshots_sum_all_conversion_value','snapshots_sum_refund','snapshots_sum_organic_sales','total_cost','total_conversion_value','total_profit','revenue','investment','amount']);
+  const moneyFields = new Set(['cost','conversion_value','checkout_value','all_conversion_value','average_cpc','average_cpm','average_cost','avg_cpc','avg_cpm','cpc','cpa','max_cpc_limit','budget','budget_daily','target_cpa','refund','organic_sales','profit','cost_per_conv','snapshots_sum_cost','snapshots_sum_conversion_value','snapshots_sum_checkout_value','snapshots_sum_all_conversion_value','snapshots_sum_refund','snapshots_sum_organic_sales','total_cost','total_conversion_value','total_profit','revenue','investment','amount','comissao_media','cpc_maior','cpc_medio','cpc_ideal','valor_gasto']);
   function convertObjectMoney(obj,from,to){
     if(!obj||typeof obj!=='object')return obj;
     for(const k of Object.keys(obj)) if(moneyFields.has(k)&&typeof obj[k] !== 'object' && obj[k]!=null) obj[k]=cv(obj[k],from,to);
@@ -171,9 +176,62 @@
   }
   function transformFunnel(j,target){
     if(target==='ORIGINAL')return j;
-    const d=j?.data;if(!d)return j;const from=String(d.currency_code||d.campaign?.currency_code||'').toUpperCase();if(!from)return j;
-    if(from!==target){convertObjectMoney(d.funnel,from,target);if(d.cards)for(const c of Object.values(d.cards))if(c&&typeof c==='object'&&'value'in c)c.value=cv(c.value,from,target);for(const r of d.charts?.timeline_daily||[])convertObjectMoney(r,from,target);}
+    const d=j?.data;if(!d)return j;
+    const bucket=d.money_by_currency&&typeof d.money_by_currency==='object'?d.money_by_currency:null;
+    if(bucket){
+      const total=(field)=>Object.entries(bucket).reduce((sum,[cur,b])=>sum+cv(b?.[field]||0,cur,target),0);
+      const cost=total('cost'),value=total('conversion_value');
+      if(d.cards?.investment)d.cards.investment.value=cost;
+      if(d.cards?.conversion_value)d.cards.conversion_value.value=value;
+      if(d.cards?.cost_per_result){const conv=Number(d.funnel?.conversions||d.funnel?.purchases||d.cards?.result?.value||0);d.cards.cost_per_result.value=conv?cost/conv:0;}
+      for(const r of d.charts?.timeline_daily||[]){
+        if(r.money_by_currency){for(const field of ['cost','conversion_value','checkout_value','all_conversion_value'])r[field]=Object.entries(r.money_by_currency).reduce((sum,[cur,b])=>sum+cv(b?.[field]||0,cur,target),0);}
+        else {const from=String(r.currency_code||d.currency_code||'').toUpperCase();if(from)convertObjectMoney(r,from,target);}
+        r.currency_code=target;
+      }
+      d.currency_code=target;return j;
+    }
+    const from=String(d.currency_code||d.campaign?.currency_code||'').toUpperCase();if(!from)return j;
+    if(from!==target){
+      convertObjectMoney(d.funnel,from,target);
+      for(const key of ['investment','conversion_value','cost_per_result','checkout_value']){const c=d.cards?.[key];if(c&&typeof c==='object'&&'value'in c)c.value=cv(c.value,from,target);}
+      for(const r of d.charts?.timeline_daily||[])convertObjectMoney(r,from,target);
+    }
     d.currency_code=target;return j;
+  }
+  function transformSegments(j,target){
+    if(target==='ORIGINAL')return j;
+    const d=j?.data;if(!d||typeof d!=='object')return j;
+    for(const arr of Object.values(d)){
+      if(!Array.isArray(arr))continue;
+      for(const row of arr){
+        if(!row||typeof row!=='object')continue;
+        const buckets=row.money_by_currency&&typeof row.money_by_currency==='object'?row.money_by_currency:null;
+        if(buckets){
+          const sumField=field=>Object.entries(buckets).reduce((sum,[cur,b])=>sum+cv(b?.[field]||0,cur,target),0);
+          row.cost=sumField('cost');
+          row.conversion_value=sumField('conversion_value');
+          row.checkout_value=sumField('checkout_value');
+          row.all_conversion_value=sumField('all_conversion_value');
+          const clicks=Number(row.clicks||0),impr=Number(row.impressions||0),interactions=Number(row.interactions||0);
+          row.average_cpc=row.avg_cpc=clicks?row.cost/clicks:0;
+          row.average_cpm=row.avg_cpm=impr?row.cost/impr*1000:0;
+          row.average_cost=interactions?row.cost/interactions:(clicks?row.cost/clicks:0);
+        }else{
+          const from=String(row.currency_code||'').toUpperCase();if(from)convertObjectMoney(row,from,target);
+          if(row.average_cpc!=null)row.avg_cpc=row.average_cpc;
+          if(row.average_cpm!=null)row.avg_cpm=row.average_cpm;
+        }
+        row.currency_code=target;
+      }
+    }
+    return j;
+  }
+  function transformDailyMetrics(j,target){
+    if(target==='ORIGINAL')return j;
+    const arr=Array.isArray(j?.data)?j.data:null;if(!arr)return j;
+    for(const row of arr){const from=String(row.currency_code||j?.currency_code||'').toUpperCase();if(from&&from!==target)convertObjectMoney(row,from,target);row.currency_code=target;}
+    if(j&&typeof j==='object')j.currency_code=target;return j;
   }
   function transformDashboard(j,target){
     if(target==='ORIGINAL')return j;
@@ -181,6 +239,9 @@
     for(const key of ['purchase_by_currency','refund_by_currency']){
       const arr=d.cards?.[key];if(Array.isArray(arr)){const amount=arr.reduce((s,x)=>s+cv(x.amount,x.currency||'',target),0);d.cards[key]=[{currency:target,amount}];}
     }
+    const buckets=d.totals_by_currency&&typeof d.totals_by_currency==='object'?d.totals_by_currency:null;
+    if(buckets){const revenue=Object.entries(buckets).reduce((sum,[cur,b])=>sum+cv(b?.revenue||0,cur,target),0),cost=Object.entries(buckets).reduce((sum,[cur,b])=>sum+cv(b?.cost||0,cur,target),0),profit=revenue-cost;d.revenue=revenue;d.investment=cost;d.cost=cost;d.profit=profit;if(d.totals){d.totals.revenue=revenue;d.totals.investment=cost;d.totals.cost=cost;d.totals.profit=profit;d.totals.roi=cost?profit/cost*100:0;}d.roi=cost?profit/cost*100:0;}
+    for(const key of ['top_campaigns','worst_campaigns'])for(const row of d[key]||[]){const from=String(row.currency_code||'').toUpperCase();if(from){convertObjectMoney(row,from,target);row.currency_code=target;}}
     return j;
   }
   function transformSalesChart(j,target){
@@ -232,6 +293,8 @@
     if(p.includes('/workspace/trackers'))return transformTrackers(j,target);
     if(p.includes('/workspace/google-ads/report-daily'))return transformReport(j,target);
     if(p.includes('/workspace/google-ads/metrics/funnel'))return transformFunnel(j,target);
+    if(p.includes('/workspace/google-ads/segments'))return transformSegments(j,target);
+    if(/\/workspace\/google-ads\/campaigns\/[^/]+\/daily-metrics/.test(p))return transformDailyMetrics(j,target);
     if(p.includes('/workspace/dashboard/charts/sales'))return transformSalesChart(j,target);
     if(p.includes('/workspace/financial/entries'))return transformFinancialEntries(j,target);
     if(p.includes('/workspace/financial/mining'))return transformFinancialMining(j,target);
@@ -240,11 +303,12 @@
     if(/\/workspace\/dashboard(?:\?|$)/.test(p))return transformDashboard(j,target);
     return j;
   }
-  const convertibleUrl=url=>['/workspace/google-ads/accounts','/workspace/trackers','/workspace/google-ads/report-daily','/workspace/google-ads/metrics/funnel','/workspace/dashboard','/workspace/financial/entries','/workspace/financial/mining','/workspace/financial/company','/workspace/financial/dashboard'].some(p=>String(url).includes(p));
+  const convertibleUrl=url=>['/workspace/google-ads/accounts','/workspace/trackers','/workspace/google-ads/report-daily','/workspace/google-ads/metrics/funnel','/workspace/google-ads/segments','/workspace/google-ads/campaigns/','/workspace/dashboard','/workspace/financial/entries','/workspace/financial/mining','/workspace/financial/company','/workspace/financial/dashboard'].some(p=>String(url).includes(p));
+  const cacheableUrl=url=>String(url).includes('/api/v1/workspace/');
 
-  function rememberSnapshot(raw,url){
+  function rememberSnapshot(raw,url,requestKey=null){
     const id='fx'+(++snapshotSeq);
-    snapshots.set(id,{raw:clone(raw),url:String(url)});
+    snapshots.set(id,{raw:clone(raw),url:String(url),requestKey});
     return id;
   }
   function defineTag(value,id,shape){
@@ -278,22 +342,40 @@
     if(shape==='data.rows')return full?.data?.rows;
     return full;
   }
-  async function transformedResponse(resp,url){
-    if(!resp.ok||!convertibleUrl(url))return resp;
+  function requestCacheKey(input,init){
+    const url=typeof input==='string'?input:input?.url||'';
+    const method=String(init?.method||input?.method||'GET').toUpperCase();
+    let body='';
+    if(typeof init?.body==='string')body=init.body;
+    else if(init?.body instanceof URLSearchParams)body=init.body.toString();
+    return `${method} ${url} ${body}`;
+  }
+  function responseFromRaw(raw,url,status=200,statusText='OK',headersInit={'content-type':'application/json'},requestKey=null){
+    const id=rememberSnapshot(raw,url,requestKey);
+    const j=projectSnapshot(id,mode);
+    const h=new Headers(headersInit||{});if(!h.has('content-type'))h.set('content-type','application/json');h.delete('content-length');
+    return new Response(JSON.stringify(j),{status,statusText,headers:h});
+  }
+  async function transformedResponse(resp,url,key){
+    if(!resp.ok||!cacheableUrl(url))return resp;
     const ct=resp.headers.get('content-type')||'';if(!ct.includes('application/json'))return resp;
     let raw;try{raw=await resp.clone().json();}catch{return resp;}
-    const id=rememberSnapshot(raw,url);
-    const j=projectSnapshot(id,mode);
-    const h=new Headers(resp.headers);h.delete('content-length');
-    return new Response(JSON.stringify(j),{status:resp.status,statusText:resp.statusText,headers:h});
+    responseCache.set(key,{raw:clone(raw),url:String(url),status:resp.status,statusText:resp.statusText,headers:[...resp.headers.entries()]});
+    return responseFromRaw(raw,url,resp.status,resp.statusText,resp.headers,key);
   }
 
   window.fetch=async function(input,init){
     const url=typeof input==='string'?input:input?.url||'';
-    // Apenas o primeiro carregamento sem taxa local pode esperar a cotação. Troca de moeda nunca passa aqui.
+    const key=requestCacheKey(input,init);
+    if(inReplay()&&cacheableUrl(url)){
+      const cached=responseCache.get(key);
+      if(cached)return responseFromRaw(cached.raw,cached.url,cached.status,cached.statusText,cached.headers,key);
+      const e=new Error(`POWER_SCALE_LOCAL_REPLAY_MISS: ${key}`);e.code='POWER_SCALE_LOCAL_REPLAY_MISS';throw e;
+    }
+    // Apenas o primeiro carregamento sem taxa local pode esperar a cotação. Troca de moeda nunca depende de consulta aos dados.
     if(mode!=='ORIGINAL'&&convertibleUrl(url)&&!Object.keys(apiRates).length) await refreshRates();
     const resp=await originalFetch(input,init);
-    return transformedResponse(resp,url);
+    return transformedResponse(resp,url,key);
   };
 
   function snapshotMetaFromData(data){
@@ -342,19 +424,35 @@
     }
     return changed>0;
   }
+  async function replayTaggedQueries(){
+    const q=window.__POWER_SCALE_QUERY_CLIENT__;
+    if(!q?.refetchQueries||replayPromise)return replayPromise||false;
+    const predicate=query=>{const meta=snapshotMetaFromData(query?.state?.data);return !!(meta&&snapshots.has(meta.id));};
+    const tagged=q.getQueryCache?.().getAll?.().filter(predicate)||[];
+    if(!tagged.length)return false;
+    replayPromise=withLocalReplay(async()=>{
+      try{await q.refetchQueries({type:'active',predicate},{cancelRefetch:false});return true;}
+      catch(e){if(e?.code!=='POWER_SCALE_LOCAL_REPLAY_MISS')console.warn('[POWER SCALE] replay local de moeda falhou',e);return false;}
+      finally{replayPromise=null;}
+    });
+    return replayPromise;
+  }
   function liveRefresh(){
-    // Operação 100% local: não invalida queries, não dispara focus/online e não faz fetch.
-    // Reprojeta imediatamente e novamente nos próximos frames para alcançar componentes
-    // que criam estado derivado depois do primeiro commit do React.
-    const run=()=>projectQueryCache();
-    run();
-    try{requestAnimationFrame(()=>{run();requestAnimationFrame(run);});}catch{}
-    setTimeout(run,25);
+    // 100% local para os dados da aplicação: primeiro projeta o cache atual e depois
+    // reexecuta apenas queryFns já carregadas usando respostas HTTP preservadas em memória.
+    // Isso força os componentes que criam estado/useMemo derivado a recalcular sem rede.
+    projectQueryCache();
+    replayTaggedQueries().then(()=>{
+      projectQueryCache();
+      const detail={mode,replayed:true};
+      window.dispatchEvent(new CustomEvent('power-scale:currency-local',{detail}));
+    });
     const detail={mode};
-    window.dispatchEvent(new CustomEvent('power-scale:currency-local',{detail}));
     window.dispatchEvent(new CustomEvent('power-scale:currency-change',{detail}));
   }
   window.__POWER_SCALE_APPLY_CURRENCY__=projectQueryCache;
+  window.__POWER_SCALE_WITH_LOCAL_REPLAY__=withLocalReplay;
+  window.__POWER_SCALE_FX_DEBUG__={cv,rateFor,transformByUrl,projectQueryCache,replayTaggedQueries,responseCache,snapshots,setMode:m=>{mode=String(m||'ORIGINAL').toUpperCase();},liveRefresh,withLocalReplay};
 
   function css(){if(document.getElementById('ps-fx-css'))return;const st=document.createElement('style');st.id='ps-fx-css';st.textContent=`
 #ps-fx-wrap{position:relative;display:flex;align-items:center}.ps-fx-btn{height:38px;min-width:86px;padding:0 11px;border-radius:10px;background:var(--fx-surface);border:1px solid rgba(var(--fx-gold-rgb),.13);color:var(--fx-text-2);font:600 12px/1 system-ui;cursor:pointer;display:flex;align-items:center;gap:7px;justify-content:center}.ps-fx-btn:hover,.ps-fx-btn.open{color:var(--fx-gold-bright);border-color:rgba(var(--fx-gold-rgb),.45);box-shadow:0 0 12px rgba(var(--fx-gold-rgb),.10)}.ps-fx-dot{width:6px;height:6px;border-radius:50%;background:var(--fx-gold)}.ps-fx-pop{display:none;position:absolute;right:0;top:46px;width:330px;padding:10px;border-radius:12px;background:var(--fx-surface);border:1px solid rgba(var(--fx-gold-rgb),.22);box-shadow:0 18px 48px rgba(0,0,0,.42);z-index:9999}.ps-fx-pop.open{display:block}.ps-fx-title{font-size:10px;letter-spacing:1.3px;text-transform:uppercase;color:var(--fx-text-3);font-weight:700;padding:4px 6px 8px}.ps-fx-modes{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;padding-bottom:9px;border-bottom:1px solid rgba(var(--fx-gold-rgb),.10)}.ps-fx-mode{padding:8px 4px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--fx-text-2);font-size:11px;font-weight:700;cursor:pointer}.ps-fx-mode:hover{background:rgba(var(--fx-gold-rgb),.07)}.ps-fx-mode.active{background:rgba(var(--fx-gold-rgb),.15);border-color:rgba(var(--fx-gold-rgb),.32);color:var(--fx-gold-bright)}.ps-fx-rates{padding-top:8px}.ps-fx-rate{display:grid;grid-template-columns:70px 1fr 92px;gap:8px;align-items:center;padding:6px}.ps-fx-pair{font-size:11px;font-weight:800;color:var(--fx-text-1)}.ps-fx-api{font-size:10px;color:var(--fx-text-3)}.ps-fx-api b{display:block;color:var(--fx-gold-bright);font-size:11px;margin-top:2px}.ps-fx-input{width:92px;height:30px;border-radius:7px;border:1px solid rgba(var(--fx-gold-rgb),.18);background:var(--fx-bg);color:var(--fx-text-1);padding:0 8px;font-size:11px;text-align:right;outline:none}.ps-fx-input:focus{border-color:rgba(var(--fx-gold-rgb),.55)}.ps-fx-note{font-size:9.5px;line-height:1.35;color:var(--fx-text-3);padding:7px 6px 2px}.ps-fx-manual{color:var(--fx-invest);font-size:9px;margin-left:3px}@media(max-width:900px){#ps-fx-wrap{display:none}}`;
